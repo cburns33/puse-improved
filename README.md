@@ -2,39 +2,134 @@
 
 > Live app: **[https://zannael.github.io/PUSE/](https://zannael.github.io/PUSE/)**
 
-Web-based save editor for Pokemon Unbound (v 2.1.1.1) built with a frontend-first architecture.
-The project **now also includes a Nintendo Switch Homebrew version!**
-The app supports local in-browser save editing (recommended) and backend mode (FastAPI) with parity-focused behavior.
+Web-based save editor for Pokémon Unbound (v2.1.1.1). Parsing, editing, checksum recalculation, and export can run entirely in the browser (**Local mode**, recommended) or through a local FastAPI server (**Backend mode**) with parity-focused behavior.
+
+The project also includes **Nintendo Switch** and **experimental Nintendo 3DS** homebrew ports under `switch-homebrew/` and `3ds-homebrew/`.
 
 ## Features
 
-- Party editing (species, nickname, IV/EV, moves, PP/PP Ups, nature, item, ability, level)
-- PC editing (including insert workflows for writable empty slots)
-- Bag editing with quick pocket discovery + search fallback (main, balls, berries, TM case, key items)
-- Money editing (safe clamping)
-- Identity controls (shiny/gender) with PID-aware safety checks
-- RTC metadata recovery tools (pair repair and quick fix)
-- Checksum recalculation and save export
+### Save editing
+
+| Area | What you can do |
+|------|-----------------|
+| **Party** | Edit all 6 slots: species, nickname, level, nature, item, ability slot, IVs/EVs, moves, PP/PP Ups, shiny, gender |
+| **PC** | Browse boxes 1–24 and **Preset** (internal box 26); edit stored Pokémon; insert new Pokémon into writable empty slots; release (delete) stored Pokémon |
+| **All** | Sortable, filterable table of every owned Pokémon; multiselect to copy/export Markdown or mass-release PC Pokémon |
+| **Bag** | Quick pockets (main, balls, berries, TM case, key items), search fallback, explicit **SAVE BAG CHANGES** before write |
+| **Resources** | Money (up to 999,999,999) and Battle Points (up to 65,535) |
+| **Export** | Download checksum-safe `.sav` / `.srm` after edits |
+
+PC support includes Unbound-specific fragmented box layouts (tail boxes) where the standard contiguous PC stream does not apply. Box 25 is hidden from navigation by design.
+
+### Pokémon editor
+
+Open any party or PC Pokémon for a full modal editor:
+
+- **Stats** — IV/EV sliders, battle stat preview, Hidden Power type, growth-aware level editing
+- **Moves** — per-slot PP/PP Up controls, **MAX PP**, Showdown set import (species/level/identity preserved)
+- **Dex** — Unbound Dex learnsets, save-progress TM/HM hints, links to external Dex locations, manual **Seen** / **Caught** flags
+- **Info** — species search (form-aware labels), nickname, shiny/gender with PID-aware warnings
+
+For PC Pokémon, the editor also has a **Release** button that permanently clears the slot (with confirmation). Party Pokémon cannot be released from the editor, because the in-game party is a packed list that needs slot-shifting.
+
+**Legit mode** (header toggle, persisted in browser) enforces a 510 EV cap and surfaces learnset/level-cap warnings when enabled. **Cap: Normal / Expert** selects which level-cap table is used for warnings and roster export (save difficulty is not auto-detected yet).
+
+### All Pokémon table
+
+The bottom-nav **All** tab lists every party and PC Pokémon in a single sortable, filterable table (dex #, level, nature, ability, all six IVs, IV total, and location). It is built for triage and bulk actions:
+
+- **Sort** by any column (level, individual IVs, IV total, name, etc.) with click-to-sort headers.
+- **Filter** with search and quick chips (Shiny, Hidden ability, 6 IV, **2+ perfect IVs**), or open **IV filters** to set minimum thresholds per stat with **Match all** (every stat) / **Match any** (at least one stat) modes plus a minimum IV total.
+- **Select** individual rows or use **Select filtered** to select everything matching the current filters. Selection is shared with the roster export queue used elsewhere.
+- **Act on the selection** in-table: **COPY SELECTION** / **EXPORT** as Markdown, or **DELETE** to mass-release the selected PC Pokémon (party Pokémon are skipped).
+
+Clicking any row opens the standard editor modal.
+
+### Team sharing (roster export)
+
+Copy or download party + PC data as Markdown for team sharing, planning, or AI agent workflows. See [Roster export](#roster-export) below.
+
+### Living Dex
+
+The bottom-nav **Dex** tab reads caught/seen flags from your save and shows completion progress. See [Living Dex tab](#living-dex-tab) below.
+
+### Recovery & utilities
+
+- **RTC tools** — pair repair and quick-fix candidate generation for known RTC tampering scenarios (home page, before upload)
+- **SRM / SAV converter** — convert between `.srm` and `.sav` before loading (home page)
+- **Optional sprites** — Pokémon and item icons from pinned CDN manifests or local folders; placeholders when missing
 
 ## Runtime Modes
 
-- **Local mode (`VITE_RUNTIME_MODE=local`)**: parsing/editing/checksum/export run completely in the browser.
-- **Backend mode (`VITE_RUNTIME_MODE=backend`)**: uses FastAPI local endpoints.
+- **Local mode (`VITE_RUNTIME_MODE=local`)**: parsing, editing, checksum, and export run completely in the browser. Used by the GitHub Pages deployment.
+- **Backend mode (`VITE_RUNTIME_MODE=backend`)**: uses a local FastAPI server at `VITE_API_BASE_URL` (default `http://localhost:8000`).
+
+Both modes target the same behavior. When they differ, backend logic is treated as canonical during development.
 
 ## End-User UX (Website)
 
-The live app home page now contains the UX onboarding flow and static workflow previews.
-If you want to use PUSE as an end user, start directly from the website:
+Start from the live app: **[https://zannael.github.io/PUSE/](https://zannael.github.io/PUSE/)**
 
-- **[https://zannael.github.io/PUSE/](https://zannael.github.io/PUSE/)**
+Typical workflow:
 
-Website flow (recommended):
+1. **Load** a `.sav` or `.srm` file (convert first if needed).
+2. **Edit** via Party, PC Box, All, Bag, or Living Dex tabs; tap a Pokémon for the full editor.
+3. **Share or bulk-manage** (optional) — **COPY ROSTER**, **COPY SELECTION**, download Markdown exports, or use the **All** tab to filter, multiselect, and mass-release.
+4. **Download** the updated save file (checksum-safe).
 
-1. Load a `.sav` or `.srm` file.
-2. Edit Party / PC / Bag / Money.
-3. Download updated save (checksum-safe).
+For RTC recovery, use the tools on the home page before uploading a broken save.
 
-For advanced recovery scenarios, use the RTC metadata tools section from the home page.
+After upload, the header shows money/BP, legit mode, cap profile, roster copy/export actions, and save/download controls.
+
+## Roster export
+
+After loading a save, use the header actions **COPY PARTY**, **COPY ROSTER**, or **EXPORT ROSTER**. All three work in **Local** and **Backend** runtime modes.
+
+| Action | Output |
+|--------|--------|
+| COPY PARTY | Clipboard Markdown for the current party only |
+| COPY ROSTER | Clipboard Markdown for party + all occupied PC slots (boxes 1–25 and preset box 26) |
+| **COPY SELECTION** | Clipboard Markdown for Pokémon you queued with the export toggle (party or PC) |
+| EXPORT ROSTER | Downloads `<save-name>_roster.md` with the same content as COPY ROSTER |
+| **EXPORT SELECTION** | Downloads `<save-name>_selection.md` for the queued Pokémon |
+
+Use the **+** toggle on party cards or PC slots to build a session-only export queue. **Add box to export** on the PC screen queues every occupied slot in the current box, and the **All** tab can multiselect (including **Select filtered**) into the same queue. Selected PC Pokémon use the same detailed stat blocks as party members so agent comparisons get full IV/EV/move context. The queue clears when you load a new save file.
+
+The **Cap: Normal / Expert** selector controls level-cap checks in the export. Expert caps come from the Unbound expert milestone table; the save difficulty flag is not auto-detected yet.
+
+### Markdown sections
+
+1. **Game Progress** — badges, normal/expert level caps, champion status, money/BP, key items (DexNav, Stat Scanner, Mega Ring), consumable counts
+2. **Level Cap Check** — Pokémon above the selected cap profile (skipped on champion saves)
+3. **Expert Speed Tiers** — party speed vs upcoming expert boss threats (skipped on champion saves)
+4. **Party** — detailed blocks per mon: types, stats, IV/EV, moves, Hidden Power, egg-move flags, evolution hints
+5. **PC** — compact one-line entries grouped by box (empty slots omitted)
+
+Party entries include calculated battle stats, Hidden Power type, and evolution tags (for example `→ [FinalEvolution] (BST n)` on unevolved Pokémon).
+
+### Dex tab (progress-aware)
+
+The Pokémon editor **Dex** tab uses your loaded save to annotate learnsets:
+
+- **Living Dex flags** — mark or clear Seen/Caught (with confirmation); Caught also sets Seen
+- **Save progress banner** — badges, level cap profile, TM Case status, TM/HM count in bag
+- **TM / HM moves** — moves whose TM item is not in your bag are marked `(TM not in bag)`; locked TM Case shows `(TM Case not unlocked)`
+- **Move links** — each move opens the external [Unbound Dex](https://ydarissep.github.io/Unbound-Pokedex/) filtered to species that learn it
+- **Tutor moves** — labeled as story-dependent (tutor unlock flags are not in save data yet)
+- **Legit mode** — learnset validation when legit mode is on
+
+Works in Local and Backend modes via `GET /game-progress` (backend) or in-browser parsing (local).
+
+### Living Dex tab
+
+The bottom-nav **Dex** tab reads caught/seen flags from the trainer save section (CFRU SaveBlock1 layout):
+
+- **Completion summary** — seen and caught percentages for species IDs 1–999
+- **Filterable list** — default filter shows species not yet caught; search by name or ID
+- **Unbound Dex links** — open encounter/location data for each species
+- **Manual flags** — mark or clear Seen/Caught with a confirmation prompt (also available on the editor Dex tab)
+
+API: `GET /pokedex/summary`, `GET /pokedex/species/{id}`, `POST /pokedex/species/{id}/flags` (backend) or equivalent local core calls. Species above ID 999 are not stored in this bitfield.
 
 ## Technical Notes
 

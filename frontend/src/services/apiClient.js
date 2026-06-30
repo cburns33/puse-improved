@@ -6,6 +6,7 @@ import {
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL;
 const MODE_STORAGE_KEY = "runtime_mode";
+const CAP_PROFILE_STORAGE_KEY = 'puse_cap_profile';
 const RTC_QUICK_MANIFEST_URL = `${import.meta.env.BASE_URL}data/rtc_manifest_unbound_v1.json`;
 
 export const RUNTIME_MODES = {
@@ -28,12 +29,17 @@ function normalizeRuntimeMode(mode) {
 
 export function getInitialRuntimeMode() {
     const fromStorage = normalizeRuntimeMode(window.localStorage.getItem(MODE_STORAGE_KEY));
+    const fromEnv = normalizeRuntimeMode(import.meta.env.VITE_RUNTIME_MODE);
+
     if (fromStorage) {
+        // Drop a stale backend selection when the build is configured for local parsing.
+        if (fromStorage === RUNTIME_MODES.backend && fromEnv === RUNTIME_MODES.local) {
+            return RUNTIME_MODES.local;
+        }
         return fromStorage;
     }
 
-    const fromEnv = normalizeRuntimeMode(import.meta.env.VITE_RUNTIME_MODE);
-    return fromEnv || RUNTIME_MODES.backend;
+    return fromEnv || RUNTIME_MODES.local;
 }
 
 export function persistRuntimeMode(mode) {
@@ -42,6 +48,15 @@ export function persistRuntimeMode(mode) {
         return;
     }
     window.localStorage.setItem(MODE_STORAGE_KEY, normalized);
+}
+
+export function getInitialCapProfile() {
+    const stored = window.localStorage.getItem(CAP_PROFILE_STORAGE_KEY);
+    return stored === 'expert' ? 'expert' : 'normal';
+}
+
+export function persistCapProfile(profile) {
+    window.localStorage.setItem(CAP_PROFILE_STORAGE_KEY, profile === 'expert' ? 'expert' : 'normal');
 }
 
 async function backendJson(path, options = undefined) {
@@ -137,6 +152,248 @@ async function ensureValidSpeciesId(speciesId) {
         throw new Error('Invalid species_id');
     }
     return nextId;
+}
+
+async function collectPartyRosterContext() {
+    const {
+        getBuffer,
+        getFilename,
+        getParty,
+        getSpeciesMap,
+        getSpeciesFormMetaMap,
+        getItemsList,
+        getMovesList,
+    } = await getLocalCoreModules();
+    const { createCatalogLookups } = await import('../core/rosterExport.js');
+
+    const [speciesMap, speciesMeta, items, moves] = await Promise.all([
+        getSpeciesMap(),
+        getSpeciesFormMetaMap(),
+        getItemsList(),
+        getMovesList(),
+    ]);
+
+    return {
+        party: getParty(getBuffer(), speciesMap, speciesMeta),
+        catalogs: createCatalogLookups({ items, moves }),
+        sourceFileName: getFilename(),
+        speciesMap,
+        speciesMeta,
+    };
+}
+
+async function collectPartyPayload(capProfile = 'normal') {
+    const { buildPartyPayload } = await import('../core/rosterExport.js');
+    const { getBuffer } = await getLocalCoreModules();
+    const { party, catalogs, sourceFileName } = await collectPartyRosterContext();
+    return buildPartyPayload({
+        party,
+        catalogs,
+        sourceFileName,
+        buffer: getBuffer(),
+        capProfile,
+    });
+}
+
+async function collectLocalRosterContext(capProfile = 'normal') {
+    const {
+        getPcContext,
+        loadPcContext,
+        setPcContext,
+        getPcBox,
+        getBuffer,
+    } = await getLocalCoreModules();
+    const { ROSTER_EXPORT_BOX_IDS } = await import('../core/rosterExport.js');
+
+    const { party, catalogs, sourceFileName, speciesMap, speciesMeta } = await collectPartyRosterContext();
+
+    let context = getPcContext();
+    if (!context) {
+        context = loadPcContext(getBuffer());
+        setPcContext(context);
+    }
+
+    const pc = [];
+    for (const boxId of ROSTER_EXPORT_BOX_IDS) {
+        const mons = getPcBox(context, boxId, speciesMap, speciesMeta);
+        mons.forEach((mon) => {
+            pc.push({ box: boxId, slot: mon.slot, mon });
+        });
+    }
+
+    return {
+        party,
+        pc,
+        catalogs,
+        sourceFileName,
+        buffer: getBuffer(),
+        capProfile,
+    };
+}
+
+async function collectFullRosterPayload(capProfile = 'normal') {
+    const { buildRosterPayload } = await import('../core/rosterExport.js');
+    const context = await collectLocalRosterContext(capProfile);
+    return buildRosterPayload({
+        party: context.party,
+        pc: context.pc,
+        catalogs: context.catalogs,
+        sourceFileName: context.sourceFileName,
+        buffer: context.buffer,
+        capProfile,
+    });
+}
+
+async function collectSelectedRosterPayload(selection, capProfile = 'normal') {
+    const { buildRosterPayload } = await import('../core/rosterExport.js');
+    const {
+        EXPORT_MODE,
+        filterPartyBySelection,
+        filterPcBySelection,
+    } = await import('../core/exportSelection.js');
+
+    if (!Array.isArray(selection) || selection.length === 0) {
+        throw new Error('No Pokémon selected for export.');
+    }
+
+    const context = await collectLocalRosterContext(capProfile);
+    const party = filterPartyBySelection(context.party, selection);
+    const pc = filterPcBySelection(context.pc, selection);
+
+    if (party.length + pc.length === 0) {
+        throw new Error('Selected Pokémon were not found in the current save.');
+    }
+
+    return buildRosterPayload({
+        party,
+        pc,
+        catalogs: context.catalogs,
+        sourceFileName: context.sourceFileName,
+        buffer: context.buffer,
+        capProfile,
+        exportMode: EXPORT_MODE.SELECTION,
+    });
+}
+
+async function collectBackendRosterContext(backendClient, capProfile = 'normal') {
+    const { createCatalogLookups, ROSTER_EXPORT_BOX_IDS } = await import('../core/rosterExport.js');
+
+    const [party, items, moves, progressResponse] = await Promise.all([
+        backendClient.getParty(),
+        backendClient.getItems(),
+        backendClient.getMoves(),
+        backendJson(`/game-progress?cap_profile=${encodeURIComponent(capProfile)}`),
+    ]);
+
+    await backendClient.loadPc();
+
+    const catalogs = createCatalogLookups({ items, moves });
+    const pc = [];
+    for (const boxId of ROSTER_EXPORT_BOX_IDS) {
+        const mons = await backendClient.getPcBox(boxId);
+        mons.forEach((mon) => {
+            pc.push({ box: boxId, slot: mon.slot, mon });
+        });
+    }
+
+    return {
+        party,
+        pc,
+        catalogs,
+        sourceFileName: progressResponse.source_file || null,
+        gameProgress: progressResponse.game_progress || null,
+    };
+}
+
+async function collectAllOwnedPokemon(client) {
+    const { ROSTER_EXPORT_BOX_IDS } = await import('../core/rosterExport.js');
+    const rows = [];
+
+    const party = await client.getParty();
+    (party || []).forEach((mon, idx) => {
+        rows.push({
+            ...mon,
+            _source: 'party',
+            _index: Number.isFinite(mon.index) ? mon.index : idx,
+        });
+    });
+
+    await client.loadPc();
+    for (const boxId of ROSTER_EXPORT_BOX_IDS) {
+        const mons = await client.getPcBox(boxId);
+        (mons || []).forEach((mon) => {
+            rows.push({ ...mon, box: boxId, _source: 'pc' });
+        });
+    }
+
+    return rows;
+}
+
+async function collectBackendPartyPayload(backendClient, capProfile = 'normal') {
+    const { buildPartyPayload } = await import('../core/rosterExport.js');
+    const { party, catalogs, sourceFileName, gameProgress } = await collectBackendRosterContext(
+        backendClient,
+        capProfile,
+    );
+    return buildPartyPayload({
+        party,
+        catalogs,
+        sourceFileName,
+        capProfile,
+        gameProgress,
+    });
+}
+
+async function collectBackendFullRosterPayload(backendClient, capProfile = 'normal') {
+    const { buildRosterPayload } = await import('../core/rosterExport.js');
+    const context = await collectBackendRosterContext(backendClient, capProfile);
+    return buildRosterPayload({
+        party: context.party,
+        pc: context.pc,
+        catalogs: context.catalogs,
+        sourceFileName: context.sourceFileName,
+        capProfile,
+        gameProgress: context.gameProgress,
+    });
+}
+
+async function collectBackendSelectedRosterPayload(backendClient, selection, capProfile = 'normal') {
+    const { buildRosterPayload } = await import('../core/rosterExport.js');
+    const {
+        EXPORT_MODE,
+        filterPartyBySelection,
+        filterPcBySelection,
+    } = await import('../core/exportSelection.js');
+
+    if (!Array.isArray(selection) || selection.length === 0) {
+        throw new Error('No Pokémon selected for export.');
+    }
+
+    const context = await collectBackendRosterContext(backendClient, capProfile);
+    const party = filterPartyBySelection(context.party, selection);
+    const pc = filterPcBySelection(context.pc, selection);
+
+    if (party.length + pc.length === 0) {
+        throw new Error('Selected Pokémon were not found in the current save.');
+    }
+
+    return buildRosterPayload({
+        party,
+        pc,
+        catalogs: context.catalogs,
+        sourceFileName: context.sourceFileName,
+        capProfile,
+        gameProgress: context.gameProgress,
+        exportMode: EXPORT_MODE.SELECTION,
+    });
+}
+
+async function copyMarkdownToClipboard(payload) {
+    const { rosterPayloadToMarkdown } = await import('../core/rosterExportMarkdown.js');
+    if (!navigator.clipboard?.writeText) {
+        throw new Error('Clipboard access is not available in this browser.');
+    }
+    await navigator.clipboard.writeText(rosterPayloadToMarkdown(payload));
 }
 
 const backendClient = {
@@ -262,8 +519,18 @@ const backendClient = {
     getPcWritableSlots(boxId) {
         return backendJson(`/pc/writable-slots/${boxId}`);
     },
+    getAllOwnedPokemon() {
+        return collectAllOwnedPokemon(this);
+    },
     editPcFull(payload) {
         return backendJson("/pc/edit-full", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+        });
+    },
+    releasePc(payload) {
+        return backendJson("/pc/release", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload),
@@ -275,6 +542,12 @@ const backendClient = {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload),
         });
+    },
+    async movePartyToBox() {
+        throw new Error('Moving Pokemon is only available in local mode.');
+    },
+    async moveBoxToParty() {
+        throw new Error('Moving Pokemon is only available in local mode.');
     },
     getMoves() {
         return backendJson("/moves");
@@ -348,6 +621,54 @@ const backendClient = {
         downloadBlob(blob, fileName);
         return { status: 'ok' };
     },
+    async exportFullRoster() {
+        const payload = await collectBackendFullRosterPayload(this, this._capProfile);
+        const { rosterPayloadToMarkdown } = await import('../core/rosterExportMarkdown.js');
+        const baseName = toBaseName(payload.source_file || 'roster');
+        const fileName = `${baseName}_roster.md`;
+        downloadBlob(new Blob([rosterPayloadToMarkdown(payload)], { type: 'text/markdown' }), fileName);
+        return payload.summary;
+    },
+    async copyFullRoster() {
+        const payload = await collectBackendFullRosterPayload(this, this._capProfile);
+        await copyMarkdownToClipboard(payload);
+        return payload.summary;
+    },
+    async copyPartyRoster() {
+        const payload = await collectBackendPartyPayload(this, this._capProfile);
+        await copyMarkdownToClipboard(payload);
+        return { count: payload.party.length };
+    },
+    async copySelectedRoster(selection) {
+        const payload = await collectBackendSelectedRosterPayload(this, selection, this._capProfile);
+        await copyMarkdownToClipboard(payload);
+        return payload.summary;
+    },
+    async exportSelectedRoster(selection) {
+        const payload = await collectBackendSelectedRosterPayload(this, selection, this._capProfile);
+        const { rosterPayloadToMarkdown } = await import('../core/rosterExportMarkdown.js');
+        const baseName = toBaseName(payload.source_file || 'roster');
+        const fileName = `${baseName}_selection.md`;
+        downloadBlob(new Blob([rosterPayloadToMarkdown(payload)], { type: 'text/markdown' }), fileName);
+        return payload.summary;
+    },
+    async getGameProgress() {
+        const response = await backendJson(`/game-progress?cap_profile=${encodeURIComponent(this._capProfile)}`);
+        return response.game_progress || null;
+    },
+    getPokedexSummary() {
+        return backendJson('/pokedex/summary');
+    },
+    getPokedexSpeciesFlags(speciesId) {
+        return backendJson(`/pokedex/species/${speciesId}`);
+    },
+    updatePokedexFlags(speciesId, payload) {
+        return backendJson(`/pokedex/species/${speciesId}/flags`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+    },
     async convertSaveFile(file, targetExt) {
         const ext = String(targetExt || '').trim().toLowerCase();
         const normalizedExt = ext.startsWith('.') ? ext : `.${ext}`;
@@ -420,7 +741,13 @@ const localClient = {
         } = await getLocalCoreModules();
         const finalized = new Uint8Array(getBuffer());
         saveAll(finalized, getPcContext());
-        downloadBlob(new Blob([finalized], { type: 'application/octet-stream' }), getFilename());
+
+        const { isLinkedSaveActive, writeLinkedFile } = await import('../core/linkedSave.js');
+        if (isLinkedSaveActive()) {
+            await writeLinkedFile(finalized);
+        } else {
+            downloadBlob(new Blob([finalized], { type: 'application/octet-stream' }), getFilename());
+        }
     },
     async getParty() {
         const { getSpeciesMap, getSpeciesFormMetaMap, getParty: readParty, getBuffer } = await getLocalCoreModules();
@@ -518,6 +845,9 @@ const localClient = {
         }
         return { box: Number(boxId), writable_slots: getWritablePcSlots(context, Number(boxId)) };
     },
+    getAllOwnedPokemon() {
+        return collectAllOwnedPokemon(this);
+    },
     async editPcFull(payload) {
         const {
             getPcContext,
@@ -538,6 +868,22 @@ const localClient = {
         editPcMonFull(context, nextPayload);
         return { status: 'PC edit buffered' };
     },
+    async releasePc(payload) {
+        const {
+            getPcContext,
+            loadPcContext,
+            setPcContext,
+            getBuffer,
+            releasePcMon,
+        } = await getLocalCoreModules();
+        let context = getPcContext();
+        if (!context) {
+            context = loadPcContext(getBuffer());
+            setPcContext(context);
+        }
+        releasePcMon(context, payload || {});
+        return { status: 'PC release buffered' };
+    },
     async insertPc(payload) {
         const {
             getPcContext,
@@ -556,6 +902,89 @@ const localClient = {
         const nextPayload = { ...(payload || {}) };
         nextPayload.species_id = await ensureValidSpeciesId(nextPayload.species_id);
         return insertPcMon(context, nextPayload, speciesMap);
+    },
+    async movePartyToBox(payload = {}) {
+        const {
+            getBuffer,
+            updateBuffer,
+            getPcContext,
+            loadPcContext,
+            setPcContext,
+            getSpeciesMap,
+            getSpeciesFormMetaMap,
+            getParty,
+            readPartyMonRaw,
+            removePartyMonAt,
+            buildPcRawFromPartyMon,
+            insertPcMonRaw,
+            findFirstFreePcSlot,
+        } = await getLocalCoreModules();
+
+        const index = Number(payload.index);
+        if (!Number.isInteger(index) || index < 0) {
+            throw new Error('Invalid party index');
+        }
+
+        const [speciesMap, speciesMeta] = await Promise.all([getSpeciesMap(), getSpeciesFormMetaMap()]);
+        const party = getParty(getBuffer(), speciesMap, speciesMeta);
+        if (party.length <= 1) {
+            throw new Error('Cannot move your last remaining party Pokemon.');
+        }
+
+        let context = getPcContext();
+        if (!context) {
+            context = loadPcContext(getBuffer());
+            setPcContext(context);
+        }
+
+        const raw58 = buildPcRawFromPartyMon(readPartyMonRaw(getBuffer(), index));
+        const target = payload.box !== undefined && payload.box !== null
+            ? { box: Number(payload.box), slot: payload.slot === undefined || payload.slot === null ? null : Number(payload.slot) }
+            : findFirstFreePcSlot(context);
+
+        const placed = insertPcMonRaw(context, target, raw58);
+        updateBuffer((next) => removePartyMonAt(next, index));
+        context.sourceBuffer = getBuffer();
+        return placed;
+    },
+    async moveBoxToParty(payload = {}) {
+        const {
+            getBuffer,
+            updateBuffer,
+            getPcContext,
+            loadPcContext,
+            setPcContext,
+            getSpeciesMap,
+            getSpeciesFormMetaMap,
+            getParty,
+            readPcMonRaw,
+            appendPcMonToParty,
+            releasePcMon,
+        } = await getLocalCoreModules();
+
+        const box = Number(payload.box);
+        const slot = Number(payload.slot);
+
+        let context = getPcContext();
+        if (!context) {
+            context = loadPcContext(getBuffer());
+            setPcContext(context);
+        }
+
+        const [speciesMap, speciesMeta] = await Promise.all([getSpeciesMap(), getSpeciesFormMetaMap()]);
+        const party = getParty(getBuffer(), speciesMap, speciesMeta);
+        if (party.length >= 6) {
+            throw new Error('Your party is full (6 Pokemon).');
+        }
+
+        const raw58 = readPcMonRaw(context, box, slot);
+        let newIndex = party.length;
+        updateBuffer((next) => {
+            newIndex = appendPcMonToParty(next, raw58);
+        });
+        releasePcMon(context, { box, slot });
+        context.sourceBuffer = getBuffer();
+        return { index: newIndex };
     },
     async getMoves() {
         const { getMovesList } = await getLocalCoreModules();
@@ -690,8 +1119,98 @@ const localClient = {
         downloadBlob(new Blob([converted], { type: 'application/octet-stream' }), fileName);
         return { status: 'ok' };
     },
+    async copyPartyRoster() {
+        const payload = await collectPartyPayload(this._capProfile);
+        await copyMarkdownToClipboard(payload);
+        return { count: payload.party.length };
+    },
+    async copyFullRoster() {
+        const payload = await collectFullRosterPayload(this._capProfile);
+        await copyMarkdownToClipboard(payload);
+        return payload.summary;
+    },
+    async copySelectedRoster(selection) {
+        const payload = await collectSelectedRosterPayload(selection, this._capProfile);
+        await copyMarkdownToClipboard(payload);
+        return payload.summary;
+    },
+    async exportFullRoster() {
+        const { rosterPayloadToMarkdown } = await import('../core/rosterExportMarkdown.js');
+        const payload = await collectFullRosterPayload(this._capProfile);
+        const baseName = toBaseName(payload.source_file || 'roster');
+        const fileName = `${baseName}_roster.md`;
+        downloadBlob(new Blob([rosterPayloadToMarkdown(payload)], { type: 'text/markdown' }), fileName);
+        return payload.summary;
+    },
+    async exportSelectedRoster(selection) {
+        const { rosterPayloadToMarkdown } = await import('../core/rosterExportMarkdown.js');
+        const payload = await collectSelectedRosterPayload(selection, this._capProfile);
+        const baseName = toBaseName(payload.source_file || 'roster');
+        const fileName = `${baseName}_selection.md`;
+        downloadBlob(new Blob([rosterPayloadToMarkdown(payload)], { type: 'text/markdown' }), fileName);
+        return payload.summary;
+    },
+    async getGameProgress() {
+        const { getBuffer } = await getLocalCoreModules();
+        const buffer = getBuffer();
+        if (!buffer?.length) {
+            return null;
+        }
+        const { buildGameProgressSnapshot } = await import('../core/gameProgress.js');
+        return buildGameProgressSnapshot(buffer, { capProfile: this._capProfile });
+    },
+    async getPokedexSummary() {
+        const { getBuffer, getSpeciesList } = await getLocalCoreModules();
+        const buffer = getBuffer();
+        if (!buffer?.length) {
+            return null;
+        }
+        const { buildPokedexSummary } = await import('../core/pokedexFlags.js');
+        const speciesRows = await getSpeciesList();
+        return buildPokedexSummary(buffer, speciesRows);
+    },
+    async getPokedexSpeciesFlags(speciesId) {
+        const { getBuffer } = await getLocalCoreModules();
+        const { getPokedexFlags } = await import('../core/pokedexFlags.js');
+        return {
+            species_id: Number(speciesId),
+            ...getPokedexFlags(getBuffer(), speciesId),
+        };
+    },
+    async updatePokedexFlags(speciesId, payload = {}) {
+        const { getBuffer } = await getLocalCoreModules();
+        const buffer = getBuffer();
+        const { setPokedexFlag, POKEDEX_FLAG, getPokedexFlags } = await import('../core/pokedexFlags.js');
+        const sid = Number(speciesId);
+        if (payload.seen !== undefined) {
+            const result = setPokedexFlag(buffer, sid, POKEDEX_FLAG.SEEN, Boolean(payload.seen));
+            if (!result.ok) {
+                throw new Error(result.reason || 'Failed to update seen flag');
+            }
+        }
+        if (payload.caught !== undefined) {
+            const result = setPokedexFlag(buffer, sid, POKEDEX_FLAG.CAUGHT, Boolean(payload.caught));
+            if (!result.ok) {
+                throw new Error(result.reason || 'Failed to update caught flag');
+            }
+        }
+        return {
+            species_id: sid,
+            ...getPokedexFlags(buffer, sid),
+        };
+    },
 };
 
-export function createApiClient(mode) {
-    return mode === RUNTIME_MODES.local ? localClient : backendClient;
+export function createApiClient(mode, options = {}) {
+    const capProfile = options.capProfile === 'expert' ? 'expert' : 'normal';
+    if (mode !== RUNTIME_MODES.local) {
+        return {
+            ...backendClient,
+            _capProfile: capProfile,
+        };
+    }
+    return {
+        ...localClient,
+        _capProfile: capProfile,
+    };
 }

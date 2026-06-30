@@ -13,6 +13,8 @@ from modules import bag as bag_mod
 from modules import money as money_mod
 from pydantic import BaseModel
 from modules import pc as box_mod
+from modules import game_progress as game_progress_mod
+from modules import pokedex_flags as pokedex_flags_mod
 import os
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -500,6 +502,28 @@ async def get_battle_points():
 
     bp = party_mod.ru16(current_save["data"], sec_off + BP_OFFSET_IN_SECTION)
     return {"bp": int(bp)}
+
+
+@app.get("/game-progress")
+async def get_game_progress(cap_profile: str = "normal"):
+    """Return save progress snapshot for roster export and legit checks."""
+    if current_save["data"] is None:
+        raise HTTPException(status_code=400, detail="Upload a .sav file first")
+
+    item_name_by_id = {
+        int(item_id): str(name)
+        for item_id, name in bag_mod.DB_ITEMS.items()
+        if int(item_id) > 0
+    }
+    snapshot = game_progress_mod.build_game_progress_snapshot(
+        current_save["data"],
+        item_name_by_id=item_name_by_id,
+        cap_profile=cap_profile,
+    )
+    return {
+        "source_file": current_save.get("filename"),
+        "game_progress": snapshot,
+    }
 
 
 @app.post("/bp/update")
@@ -1000,6 +1024,77 @@ async def get_all_species():
         )
     rows.sort(key=lambda x: x["id"])
     return rows
+
+
+class PokedexFlagsUpdate(BaseModel):
+    seen: bool | None = None
+    caught: bool | None = None
+
+
+@app.get("/pokedex/summary")
+async def get_pokedex_summary():
+    if current_save["data"] is None:
+        raise HTTPException(status_code=400, detail="Upload a .sav file first")
+
+    species_rows = []
+    for k, v in party_mod.DB_SPECIES.items():
+        if k == 0:
+            continue
+        smeta = _species_meta(k)
+        species_rows.append(
+            {
+                "id": k,
+                "name": v,
+                "label": smeta["species_label"],
+                "display_name": smeta["species_display_name"],
+            }
+        )
+    return pokedex_flags_mod.build_pokedex_summary(current_save["data"], species_rows)
+
+
+@app.get("/pokedex/species/{species_id}")
+async def get_pokedex_species_flags(species_id: int):
+    if current_save["data"] is None:
+        raise HTTPException(status_code=400, detail="Upload a .sav file first")
+    return {
+        "species_id": int(species_id),
+        **pokedex_flags_mod.get_pokedex_flags(current_save["data"], species_id),
+    }
+
+
+@app.post("/pokedex/species/{species_id}/flags")
+async def update_pokedex_species_flags(species_id: int, data: PokedexFlagsUpdate):
+    if current_save["data"] is None:
+        raise HTTPException(status_code=400, detail="Upload a .sav file first")
+
+    sid = int(species_id)
+    if not pokedex_flags_mod.is_dex_species_trackable(sid):
+        raise HTTPException(status_code=400, detail=f"Species {sid} is outside the tracked dex range (1-{pokedex_flags_mod.MAX_TRACKED_DEX_ID})")
+
+    if data.seen is not None:
+        seen_result = pokedex_flags_mod.set_pokedex_flag(
+            current_save["data"],
+            sid,
+            pokedex_flags_mod.POKEDEX_FLAG_SEEN,
+            bool(data.seen),
+        )
+        if not seen_result.get("ok"):
+            raise HTTPException(status_code=400, detail=seen_result.get("reason", "Failed to update seen flag"))
+
+    if data.caught is not None:
+        caught_result = pokedex_flags_mod.set_pokedex_flag(
+            current_save["data"],
+            sid,
+            pokedex_flags_mod.POKEDEX_FLAG_CAUGHT,
+            bool(data.caught),
+        )
+        if not caught_result.get("ok"):
+            raise HTTPException(status_code=400, detail=caught_result.get("reason", "Failed to update caught flag"))
+
+    return {
+        "species_id": sid,
+        **pokedex_flags_mod.get_pokedex_flags(current_save["data"], sid),
+    }
 
 
 @app.get("/bag/scan/{search_item_id}")
@@ -1645,6 +1740,50 @@ async def insert_pc_mon(upd: PCInsert):
             "ability_label_current": ability_label_current,
         }
     }
+
+
+class PCRelease(BaseModel):
+    box: int
+    slot: int
+
+
+@app.post("/pc/release")
+async def release_pc_mon(upd: PCRelease):
+    if not current_save["data"]:
+        raise HTTPException(status_code=400, detail="Upload a .sav file")
+
+    ctx = current_save["pc_context"]
+    if ctx.get("pc_buffer") is None:
+        await load_pc()
+        ctx = current_save["pc_context"]
+
+    target = next((m for m in ctx["mons"]
+                   if m.box == upd.box and m.slot == upd.slot), None)
+    if not target:
+        raise HTTPException(status_code=404, detail="Pokemon not found in PC")
+
+    empty = bytes(box_mod.MON_SIZE_PC)
+
+    # Mirror the buffer-sync ordering used by /pc/edit-full.
+    if target.box == 26:
+        off = target.buffer_offset
+        ctx["preset_buffer"][off: off + box_mod.MON_SIZE_PC] = empty
+    elif getattr(target, "buffer_kind", None) == "absolute":
+        off = target.buffer_offset
+        current_save["data"][off: off + box_mod.MON_SIZE_PC] = empty
+        sector_off = (off // box_mod.SECTION_SIZE) * box_mod.SECTION_SIZE
+        if _should_track_absolute_sector_for_checksum(current_save["data"], sector_off):
+            touched = set(ctx.get("absolute_touched_sectors", []))
+            touched.add(sector_off)
+            ctx["absolute_touched_sectors"] = sorted(touched)
+    else:
+        off = ((target.box - 1) * 30 + (target.slot - 1)) * box_mod.MON_SIZE_PC
+        ctx["pc_buffer"][off: off + box_mod.MON_SIZE_PC] = empty
+
+    ctx["mons"] = [m for m in ctx["mons"]
+                   if not (m.box == upd.box and m.slot == upd.slot)]
+
+    return {"status": "Pokemon released from PC", "box": upd.box, "slot": upd.slot}
 
 
 @app.post("/save-all")

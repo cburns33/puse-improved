@@ -1,8 +1,13 @@
-import React, { useState, useEffect } from 'react';
-import { X, Zap, Save, Search, Download, CircleHelp } from 'lucide-react';
+import React, { useState, useEffect, useMemo } from 'react';
+import { X, Zap, Save, Search, Download, CircleHelp, Trash2, ArrowLeftRight } from 'lucide-react';
 import { calcCurrentLevel, GROWTH_OPTIONS } from '../core/growth.js';
 import { ITEM_ICON_FALLBACK_URL, POKEMON_ICON_FALLBACK_URL } from '../core/iconResolver.js';
 import { NATURES, normalizeName, parseShowdownSet, resolveShowdownSet } from '../core/showdownImport.js';
+import UnboundDexPanel from './UnboundDexPanel.jsx';
+import { validatePokemonLegitSet, getSpeciesDexSummary } from '../core/unboundLearnset.js';
+import { calculateBattleStats } from '../core/statCalc.js';
+import { calculateHiddenPowerType } from '../core/hiddenPower.js';
+import { getLevelCapViolation } from '../core/levelCap.js';
 
 const EV_STAT_MAX = 252;
 const EV_TOTAL_MAX = 510;
@@ -25,7 +30,7 @@ const getTotalEvs = (evs = {}) =>
     Number(evs.SpD ?? 0) +
     getSpeedStatValue(evs);
 
-export const PokemonEditorModal = ({ client, pokemon, legitMode = false, onClose, onSave }) => {
+export const PokemonEditorModal = ({ client, pokemon, legitMode = false, capProfile = 'normal', onClose, onSave, onRelease, onMove }) => {
     const isPcMon = Boolean(pokemon?.isPC);
     const SAFE_IMPORT_NOTE = 'Existing Pokemon import applies item, moves, IVs, EVs, nature, and ability (if valid). Species, level, and identity metadata are preserved.';
     const initialGrowthMode = 'auto';
@@ -63,6 +68,7 @@ export const PokemonEditorModal = ({ client, pokemon, legitMode = false, onClose
     const [isSaving, setIsSaving] = useState(false);
     const [saveStage, setSaveStage] = useState('Applying changes...');
     const [showImportHelp, setShowImportHelp] = useState(false);
+    const [gameProgress, setGameProgress] = useState(null);
 
     const hasKnownItemName = (name) => {
         if (!name) return false;
@@ -88,6 +94,16 @@ export const PokemonEditorModal = ({ client, pokemon, legitMode = false, onClose
         client.getAbilities()
             .then(data => setAllAbilities(data));
     }, [client]);
+
+    useEffect(() => {
+        if (!client?.getGameProgress) {
+            setGameProgress(null);
+            return;
+        }
+        client.getGameProgress()
+            .then((snapshot) => setGameProgress(snapshot))
+            .catch(() => setGameProgress(null));
+    }, [client, capProfile, pokemon]);
 
     const updateStat = (type, stat, val) => {
         setLocalPk((prev) => {
@@ -353,7 +369,80 @@ export const PokemonEditorModal = ({ client, pokemon, legitMode = false, onClose
     };
 
 
+    const levelClampFallback = Number(localPk.level || initialLevel || MIN_LEVEL);
+    const totalEvs = getTotalEvs(localPk.evs || {});
+    const remainingEvs = Math.max(0, EV_TOTAL_MAX - totalEvs);
+    const moveNameById = useMemo(
+        () => new Map(allMoves.map((move) => [Number(move.id), move.name])),
+        [allMoves],
+    );
+    const legitSetCheck = useMemo(() => {
+        if (!legitMode) {
+            return null;
+        }
+        return validatePokemonLegitSet({
+            speciesId: localPk.species_id,
+            moves: localPk.moves || [],
+            currentAbilityIndex: localPk.current_ability_index,
+            abilityNames: {
+                current: localPk.ability_label_current,
+                currentId: localPk.current_ability_index === 2
+                    ? localPk.ability_hidden_id
+                    : localPk.current_ability_index === 1
+                        ? localPk.ability_2_id
+                        : localPk.ability_1_id,
+            },
+            moveNameById,
+        });
+    }, [legitMode, localPk, moveNameById]);
+
+    const previewLevel = useMemo(() => {
+        const parsed = clampNumber(levelInput, MIN_LEVEL, MAX_LEVEL);
+        return parsed || Number(localPk.level || initialLevel || MIN_LEVEL);
+    }, [levelInput, localPk.level, initialLevel]);
+
+    const speciesDexSummary = useMemo(
+        () => getSpeciesDexSummary(localPk.species_id),
+        [localPk.species_id],
+    );
+
+    const battleStats = useMemo(() => calculateBattleStats({
+        speciesId: localPk.species_id,
+        level: previewLevel,
+        natureId: localPk.nature_id,
+        ivs: localPk.ivs,
+        evs: localPk.evs,
+    }), [localPk.species_id, localPk.nature_id, localPk.ivs, localPk.evs, previewLevel]);
+
+    const hiddenPowerType = useMemo(
+        () => calculateHiddenPowerType(localPk.ivs || {}),
+        [localPk.ivs],
+    );
+
+    const levelCapIssue = useMemo(() => {
+        if (!legitMode || !gameProgress || gameProgress.is_champion) {
+            return null;
+        }
+        return getLevelCapViolation(previewLevel, gameProgress.effective_level_cap);
+    }, [legitMode, gameProgress, previewLevel]);
+
     const handleSaveClick = async () => {
+        if (legitMode && legitSetCheck?.issues?.length) {
+            const proceed = window.confirm(
+                `Legit mode found ${legitSetCheck.issues.length} Unbound learnset issue(s).\n\nSave anyway?`,
+            );
+            if (!proceed) {
+                return;
+            }
+        }
+        if (legitMode && levelCapIssue) {
+            const proceed = window.confirm(
+                `Legit mode: Lv ${levelCapIssue.level} exceeds the ${gameProgress?.cap_profile ?? capProfile} cap (${levelCapIssue.cap}) by ${levelCapIssue.over_by}.\n\nSave anyway?`,
+            );
+            if (!proceed) {
+                return;
+            }
+        }
         setIsSaving(true);
         setSaveStage('Applying changes...');
         const payload = { ...localPk };
@@ -373,9 +462,32 @@ export const PokemonEditorModal = ({ client, pokemon, legitMode = false, onClose
         }
     };
 
-    const levelClampFallback = Number(localPk.level || initialLevel || MIN_LEVEL);
-    const totalEvs = getTotalEvs(localPk.evs || {});
-    const remainingEvs = Math.max(0, EV_TOTAL_MAX - totalEvs);
+    const handleReleaseClick = async () => {
+        if (!onRelease) return;
+        const label = localPk?.nickname || localPk?.species_name || 'this Pokemon';
+        const proceed = window.confirm(
+            `Release ${label} from the PC?\n\nThis permanently clears the slot and cannot be undone.`,
+        );
+        if (!proceed) return;
+        setIsSaving(true);
+        setSaveStage('Releasing Pokemon...');
+        try {
+            await Promise.resolve(onRelease(pokemon));
+        } finally {
+            setIsSaving(false);
+        }
+    };
+
+    const handleMoveClick = async () => {
+        if (!onMove) return;
+        setIsSaving(true);
+        setSaveStage(isPcMon ? 'Moving to party...' : 'Moving to box...');
+        try {
+            await Promise.resolve(onMove(pokemon));
+        } finally {
+            setIsSaving(false);
+        }
+    };
 
     return (
         <div
@@ -446,6 +558,7 @@ export const PokemonEditorModal = ({ client, pokemon, legitMode = false, onClose
                 <div className="flex bg-[#1e293b]/50 p-2 gap-2 border-b border-white/5">
                     <EditorTab active={activeTab === 'stats'} label="Stats" onClick={() => setActiveTab('stats')} />
                     <EditorTab active={activeTab === 'moves'} label="Moves" onClick={() => setActiveTab('moves')} />
+                    <EditorTab active={activeTab === 'dex'} label="Dex" onClick={() => setActiveTab('dex')} />
                     <EditorTab active={activeTab === 'info'} label="Info" onClick={() => setActiveTab('info')} />
                 </div>
 
@@ -504,6 +617,48 @@ export const PokemonEditorModal = ({ client, pokemon, legitMode = false, onClose
 
                     {activeTab === 'stats' && (
                         <div className="space-y-8">
+                            <div className="bg-slate-800/40 p-6 rounded-2xl border border-white/5 space-y-3">
+                                <h4 className="text-[10px] font-black text-slate-500 uppercase tracking-widest text-center">
+                                    Battle Stats (Lv {previewLevel})
+                                </h4>
+                                {battleStats ? (
+                                    <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
+                                        {[
+                                            ['HP', battleStats.HP],
+                                            ['Atk', battleStats.Atk],
+                                            ['Def', battleStats.Def],
+                                            ['SpA', battleStats.SpA],
+                                            ['SpD', battleStats.SpD],
+                                            ['Spe', battleStats.Spe],
+                                        ].map(([label, value]) => (
+                                            <div key={label} className="rounded-xl bg-slate-900/70 border border-white/10 px-2 py-2 text-center">
+                                                <p className="text-[9px] font-black uppercase tracking-widest text-slate-500">{label}</p>
+                                                <p className="text-sm font-bold text-blue-300">{value}</p>
+                                            </div>
+                                        ))}
+                                    </div>
+                                ) : (
+                                    <p className="text-[11px] text-center text-slate-500">
+                                        Base stats unavailable for this species.
+                                    </p>
+                                )}
+                                <div className="flex flex-wrap items-center justify-center gap-2 text-[11px] text-slate-400">
+                                    {(speciesDexSummary.types?.types || []).map((type) => (
+                                        <span
+                                            key={type}
+                                            className="px-2 py-0.5 rounded-md bg-slate-900 border border-white/10 text-[10px] font-bold uppercase tracking-wide text-slate-200"
+                                        >
+                                            {type}
+                                        </span>
+                                    ))}
+                                    {hiddenPowerType && (
+                                        <span className="text-violet-300">
+                                            Hidden Power <span className="font-bold">{hiddenPowerType}</span>
+                                        </span>
+                                    )}
+                                </div>
+                            </div>
+
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                                 <StatGroup title="IVs (0-31)" type="ivs" data={localPk.ivs} update={updateStat} max={31} />
                                 <div className="space-y-4">
@@ -551,6 +706,21 @@ export const PokemonEditorModal = ({ client, pokemon, legitMode = false, onClose
                                             />
                                             <p className="mt-2 text-[10px] text-slate-500">Level is capped to 1-100.</p>
                                         </div>
+                                        {legitMode && gameProgress && !gameProgress.is_champion && (
+                                            <div className={`rounded-xl border px-3 py-2 text-[10px] ${
+                                                levelCapIssue
+                                                    ? 'border-amber-500/30 bg-amber-500/10 text-amber-200'
+                                                    : 'border-white/10 bg-slate-900/50 text-slate-400'
+                                            }`}>
+                                                <p>
+                                                    {gameProgress.cap_profile} level cap:{' '}
+                                                    <span className="font-bold">{gameProgress.effective_level_cap}</span>
+                                                    {levelCapIssue
+                                                        ? ` · exceeds cap by ${levelCapIssue.over_by}`
+                                                        : ' · within cap'}
+                                                </p>
+                                            </div>
+                                        )}
                                         <div className="bg-slate-900/70 border border-white/10 rounded-xl p-3">
                                             <p className="text-[10px] uppercase font-black text-slate-500 mb-2">Growth Curve</p>
                                             <select
@@ -640,6 +810,14 @@ export const PokemonEditorModal = ({ client, pokemon, legitMode = false, onClose
 
                     {activeTab === 'moves' && (
                         <div className="space-y-6">
+                            {legitMode && legitSetCheck?.issues?.length > 0 && (
+                                <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-[11px] text-rose-200 space-y-1">
+                                    <p className="font-bold uppercase tracking-widest text-[10px]">Unbound learnset issues</p>
+                                    {legitSetCheck.issues.map((msg) => (
+                                        <p key={msg}>- {msg}</p>
+                                    ))}
+                                </div>
+                            )}
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                 {localPk.moves.map((moveId, idx) => (
                                     <div key={idx}
@@ -741,6 +919,18 @@ export const PokemonEditorModal = ({ client, pokemon, legitMode = false, onClose
                             </div>
 
                         </div>
+                    )}
+
+                    {activeTab === 'dex' && (
+                        <UnboundDexPanel
+                            speciesRow={currentSpecies}
+                            speciesId={localPk.species_id}
+                            pokemon={localPk}
+                            moveNameById={moveNameById}
+                            legitMode={legitMode}
+                            gameProgress={gameProgress}
+                            client={client}
+                        />
                     )}
 
                     {activeTab === 'info' && (
@@ -961,7 +1151,23 @@ export const PokemonEditorModal = ({ client, pokemon, legitMode = false, onClose
 
                 </div>
 
-                <div className="p-4 sm:p-6 bg-[#1e293b]/80 border-t border-white/5 flex justify-end">
+                <div className="p-4 sm:p-6 bg-[#1e293b]/80 border-t border-white/5 flex justify-between items-center gap-3">
+                    <div className="flex items-center gap-3">
+                        {onMove ? (
+                            <button onClick={handleMoveClick}
+                                    disabled={isSaving}
+                                    className="bg-indigo-600/15 hover:bg-indigo-600/30 text-indigo-300 border border-indigo-500/30 font-bold px-5 py-3 rounded-2xl flex items-center gap-2 active:scale-95 transition-all disabled:opacity-60 disabled:cursor-not-allowed">
+                                <ArrowLeftRight size={18}/> {isPcMon ? 'MOVE TO PARTY' : 'MOVE TO BOX'}
+                            </button>
+                        ) : null}
+                        {isPcMon && onRelease ? (
+                            <button onClick={handleReleaseClick}
+                                    disabled={isSaving}
+                                    className="bg-rose-600/15 hover:bg-rose-600/30 text-rose-300 border border-rose-500/30 font-bold px-5 py-3 rounded-2xl flex items-center gap-2 active:scale-95 transition-all disabled:opacity-60 disabled:cursor-not-allowed">
+                                <Trash2 size={18}/> RELEASE
+                            </button>
+                        ) : null}
+                    </div>
                     <button onClick={handleSaveClick}
                             disabled={isSaving}
                             className="bg-blue-600 hover:bg-blue-500 text-white font-bold px-8 py-3 rounded-2xl flex items-center gap-2 shadow-lg active:scale-95 transition-all disabled:opacity-60 disabled:cursor-not-allowed">

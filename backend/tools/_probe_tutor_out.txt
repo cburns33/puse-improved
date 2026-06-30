@@ -1,0 +1,3 @@
+perfect hits=0
+check off=0x2b2ec0 zb=False match=10643 mismatch=18411
+check off=0x2b2ec0 zb=True match=10700 mismatch=18354

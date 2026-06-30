@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Added
+
+- **All Pokémon table (new tab):** a sortable, filterable view of every party and PC Pokémon in one table (dex #, level, nature, ability, all six IVs, IV total, **BST**, location). Click-to-sort columns, name/species/ID search, quick filters (Shiny, Hidden ability, 6 IV, **2+ perfect IVs**), and minimum IV thresholds with **Match all / Match any** (AND/OR) modes plus a minimum IV total. Rows open the existing editor modal. Backed by a new `getAllOwnedPokemon()` aggregator with backend/local parity.
+- **Multiselect + bulk actions in the All table:** per-row selection shares the existing roster export queue; **Select filtered**, **COPY SELECTION**, and **EXPORT** act on the current selection.
+- **PC release (delete Pokémon):** release a single PC Pokémon from the editor modal, or mass-release selected PC Pokémon from the All table (party Pokémon are skipped). New `POST /pc/release` endpoint and `releasePcMon` local core logic with backend/local parity and checksum-safe writes.
+- **Linked Save Sync** (Phase 1+2) — link a `.sav` on disk via File System Access API for live two-way sync with mGBA. Auto-reload on external changes, conflict banner when PUSE has unsaved edits, silent write-back on save. Behind `VITE_FEATURE_LINKED_SAVE=1` flag; launch with `Open PUSE Linked.bat` or `npm run dev:linked`.
+- **Living Dex tab** — read seen/caught completion from save bitfields (species IDs 1–999), Unbound Dex location links (`GET /pokedex/summary`; local core parity). Defaults to an in-game-style view that hides species you haven't seen or caught yet; sortable table with Dex #, Pokémon, Type, **BST**, and Status columns, plus a type filter dropdown matching the All table's. Row links go directly to the species' Unbound Dex page (`?species=SPECIES_X`) via a new generated `species_constants.json` (`backend/tools/build_species_constants.py`), instead of a name-search results page.
+- **Living Dex flags in editor** — Seen/Caught controls on the Pokémon editor Dex tab with user confirmation.
+- **Dex progress-aware learnsets** — TM/HM bag ownership hints and move deep links on the editor Dex tab (`gameProgress` snapshot + `dexProgress.js`).
+- **Roster export (full stack)** — COPY/EXPORT ROSTER and COPY PARTY as Markdown with game progress, level cap checks, expert speed tiers, evolution hints, and calculated battle stats (local + backend parity via `GET /game-progress`).
+- **Selective roster export** — session-only export queue (+ toggle on party/PC, **Add box to export**); COPY/EXPORT SELECTION with detailed PC blocks for agent comparison.
+- **Cap profile selector** — Normal / Expert level-cap context for legit warnings and roster export.
+- **Stat calc + editor preview** — ROM-truth battle stat preview and Hidden Power type in the editor and roster export.
+
 ### Planned
 
 - Save state files editing
@@ -15,7 +29,6 @@
 - Investigate save flags editing feasibility for difficulty mode and NG+ state.
 - Extend Trainer Profile editing to include identity metadata: name (with character encoding validation), gender/style flags, and appearance parameters (hair color/skin tone).
 - Implement "Costume Box" unlocker and wardrobe editing.
-- Find a way to manually flag "Seen" or "Caught" when editing a species that hasn't be seen/caught before. Leaving the decision to flag it to the user, thus the "manually".
 - Complete box 20 fallback mapping for slots `22..30` in the Unbound tail layout. Current support enables slots `1..21` only, because the remaining segment overlaps ambiguous trailer bytes where deterministic slot mapping is not yet proven checksum-safe across save variants.
 - Add keyboard-assisted stat editing shortcuts (Ctrl+click to set max, Alt+click to set zero) for IV/EV fields.
 - Happiness editing
