@@ -17,6 +17,7 @@ A Nintendo Switch homebrew port is in progress under `switch-homebrew/`.
 ```bash
 npm install
 npm run dev          # dev server at http://localhost:5173
+npm run dev:linked   # dev server with VITE_FEATURE_LINKED_SAVE=1 (Linked Save Sync)
 npm run build        # production build
 npm run lint         # lint all files
 npm run parity:all   # all regression scripts in frontend/scripts/
@@ -73,6 +74,8 @@ The `frontend/src/core/` directory is a JS port of the backend Python logic with
 | `core/statCalc.js` | (inline in party modules) |
 | `core/levelCap.js` | (uses `unbound_level_caps.json`) |
 | `core/unboundLearnset.js` | (static `species_learnsets.json`) |
+| `core/balls.js` | (inline `DB_BALLS` in `modules/party.py`) |
+| `core/linkedSave.js` | (no backend counterpart; local-mode only, File System Access API) |
 
 **When behavior differs, backend is authoritative.** See `switch-homebrew/RULES.md` section 2.
 
@@ -85,6 +88,10 @@ The `frontend/src/core/` directory is a JS port of the backend Python logic with
 `App.jsx` owns global state: loaded save, active tab (party / pc / all / bag / dex), selected Pokemon, PC box, export selection queue, legit mode, cap profile. Lazy-loaded components (`PartyGrid`, `PCGrid`, `AllPokemonTable`, `BagView`, `LivingDexPanel`, `PokemonEditorModal`, `AddPcPokemonModal`) receive `client` as a prop. Save/download calls go through `client.saveAll()` then `client.downloadSave()`. Roster copy/export uses `client.copyRosterMarkdown()`, `client.exportFullRoster()`, and selection variants.
 
 The **All** tab (`AllPokemonTable`) aggregates every party + PC Pokemon via `client.getAllOwnedPokemon()` (backend + local parity: loops party then `ROSTER_EXPORT_BOX_IDS`, tagging each row with `_source` and `box`/`slot`). It is read-only display with sort/filter/multiselect; rows open `PokemonEditorModal`, and the shared export-selection queue powers in-table copy/export plus mass-release. PC Pokemon can be released (deleted) via `client.releasePc({ box, slot })` (`POST /pc/release` backend, `releasePcMon` in `core/pc.js` local), which zeroes the slot and recommits checksums on `saveAll`. Party deletion is intentionally unsupported (packed list requires slot-shifting).
+
+Selected PC Pokemon can also be bulk-moved to a different box via `client.movePc({ from_box, from_slot, to_box })` (`POST /pc/move` backend, local core equivalent). A fixed set of known-unsafe fallback slots (currently box 23 slot 4, whose byte range overlaps its backing section's footer) is rejected server-side by `_is_locked_fallback_slot` in `backend/main.py` — check that guard before extending fallback box writes.
+
+**Linked Save Sync** (`core/linkedSave.js`, `hooks/useLinkedSaveWatch.js`) lets local mode link a `.sav` on disk via the File System Access API instead of upload/download, with a watcher that detects external changes (e.g. mGBA writing the file) and prompts to reload. Gated behind `VITE_FEATURE_LINKED_SAVE=1` (Chromium-only); launch with `npm run dev:linked` or `Open PUSE Linked.bat`.
 
 ### Static data
 
@@ -118,9 +125,6 @@ These reverse the per-species data so an LLM can answer "which species can have 
 `switch-homebrew/` contains a Plutonium (libnx) C++ port, currently in development. Build requires Docker with devkitPro. The backend Python is the canonical behavior reference. See `switch-homebrew/RULES.md` and `switch-homebrew/PLAN.md` for full requirements.
 
 ## Key Conventions
-
-### Feature phase handoff
-When starting or closing work on a web feature, update [`docs/FEATURE_PHASE_HANDOFF.md`](docs/FEATURE_PHASE_HANDOFF.md) (phase index, session log, verification). Copy the phase template for new work.
 
 ### API contracts are stable
 Payload keys (`nature_id`, `item_id`, `ability_index`, `current_ability_index`, etc.) are shared contracts between frontend and backend. Change both sides together or don't change at all.

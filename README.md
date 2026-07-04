@@ -12,9 +12,9 @@ The project also includes **Nintendo Switch** and **experimental Nintendo 3DS** 
 
 | Area | What you can do |
 |------|-----------------|
-| **Party** | Edit all 6 slots: species, nickname, level, nature, item, ability slot, IVs/EVs, moves, PP/PP Ups, shiny, gender |
-| **PC** | Browse boxes 1–24 and **Preset** (internal box 26); edit stored Pokémon; insert new Pokémon into writable empty slots; release (delete) stored Pokémon |
-| **All** | Sortable, filterable table of every owned Pokémon; multiselect to copy/export Markdown or mass-release PC Pokémon |
+| **Party** | Edit all 6 slots: species, nickname, level, nature, item, caught ball, ability slot, IVs/EVs, moves, PP/PP Ups, shiny, gender |
+| **PC** | Browse boxes 1–24 and **Preset** (internal box 26); edit stored Pokémon; insert new Pokémon into writable empty slots; release (delete) or move stored Pokémon to another box |
+| **All** | Sortable, filterable table of every owned Pokémon; multiselect to copy/export Markdown, mass-release, or mass-move selected PC Pokémon to another box |
 | **Bag** | Quick pockets (main, balls, berries, TM case, key items), search fallback, explicit **SAVE BAG CHANGES** before write |
 | **Resources** | Money (up to 999,999,999) and Battle Points (up to 65,535) |
 | **Export** | Download checksum-safe `.sav` / `.srm` after edits |
@@ -28,7 +28,7 @@ Open any party or PC Pokémon for a full modal editor:
 - **Stats** — IV/EV sliders, battle stat preview, Hidden Power type, growth-aware level editing
 - **Moves** — per-slot PP/PP Up controls, **MAX PP**, Showdown set import (species/level/identity preserved)
 - **Dex** — Unbound Dex learnsets, save-progress TM/HM hints, links to external Dex locations, manual **Seen** / **Caught** flags
-- **Info** — species search (form-aware labels), nickname, shiny/gender with PID-aware warnings
+- **Info** — species search (form-aware labels), nickname, caught ball (all CFRU/Unbound types), shiny/gender with PID-aware warnings
 
 For PC Pokémon, the editor also has a **Release** button that permanently clears the slot (with confirmation). Party Pokémon cannot be released from the editor, because the in-game party is a packed list that needs slot-shifting.
 
@@ -41,7 +41,7 @@ The bottom-nav **All** tab lists every party and PC Pokémon in a single sortabl
 - **Sort** by any column (level, individual IVs, IV total, name, etc.) with click-to-sort headers.
 - **Filter** with search and quick chips (Shiny, Hidden ability, 6 IV, **2+ perfect IVs**), or open **IV filters** to set minimum thresholds per stat with **Match all** (every stat) / **Match any** (at least one stat) modes plus a minimum IV total.
 - **Select** individual rows or use **Select filtered** to select everything matching the current filters. Selection is shared with the roster export queue used elsewhere.
-- **Act on the selection** in-table: **COPY SELECTION** / **EXPORT** as Markdown, or **DELETE** to mass-release the selected PC Pokémon (party Pokémon are skipped).
+- **Act on the selection** in-table: **COPY SELECTION** / **EXPORT** as Markdown, **DELETE** to mass-release the selected PC Pokémon, or pick a destination box and **MOVE** to relocate them there (party Pokémon are skipped by both actions).
 
 Clicking any row opens the standard editor modal.
 
@@ -52,6 +52,19 @@ Copy or download party + PC data as Markdown for team sharing, planning, or AI a
 ### Living Dex
 
 The bottom-nav **Dex** tab reads caught/seen flags from your save and shows completion progress. See [Living Dex tab](#living-dex-tab) below.
+
+### Linked Save Sync (experimental)
+
+In local mode, you can link a `.sav` file on disk instead of uploading/downloading each time. PUSE watches the linked file for external changes (for example mGBA writing a new save while the ROM is running) and offers to reload; if you have unsaved edits when that happens, a conflict banner lets you choose. Saving writes back to the linked file directly instead of triggering a browser download.
+
+Requires a Chromium-based browser (File System Access API) and is gated behind `VITE_FEATURE_LINKED_SAVE=1` (off by default). Launch with:
+
+```bash
+npm run dev:linked      # dev server with the flag set
+npm run build:linked    # production build with the flag set
+```
+
+or use `Open PUSE Linked.bat` (Windows) from the repo root.
 
 ### Recovery & utilities
 
@@ -355,6 +368,7 @@ Source: [PokeAPI/sprites](https://github.com/PokeAPI/sprites) item icons or Leon
 - `VITE_API_BASE_URL` backend base URL
 - `VITE_RUNTIME_MODE` runtime mode (`backend` or `local`)
 - `VITE_BASE_PATH` Vite base path (`/` for local dev, `/<repo>/` for project Pages)
+- `VITE_FEATURE_LINKED_SAVE` set to `1` to enable Linked Save Sync (local mode only, Chromium-only); set automatically by `npm run dev:linked` / `npm run build:linked`
 
 ## Deployment (Maintainers)
 
