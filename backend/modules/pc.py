@@ -448,6 +448,12 @@ class UnboundPCMon:
         self.exp = ru32(self.raw, OFF_EXP)
 
         # --- FILTRI DI VALIDITÀ ---
+        # Every real Pokemon has a non-zero PID from the game's LCRNG. Fallback-box
+        # (20-24) reads can land on non-Pokemon save data (flags, counters) that
+        # coincidentally passes the species/exp range checks below; rejecting
+        # pid==0 catches that class of false positive before it's treated as a
+        # real Pokemon (and, e.g., zeroed out on release, corrupting real save data).
+        if ru32(self.raw, OFF_PID) == 0: return
         if self.species_id == 0: return
         if self.species_id > 2500: return
         # Filtro Anti-Spazzatura: Exp Max teorica ~1.6M
@@ -695,6 +701,13 @@ def get_active_pc_sectors(data):
     return sorted([s for s in sections if s['idx'] == max_idx], key=lambda x: x['id'])
 
 
+def zero_stream_sector_tail(payload):
+    chunk = bytearray(payload[:SECTOR_PAYLOAD_SIZE])
+    for i in range(SECTOR_PAYLOAD_SIZE - 4, SECTOR_PAYLOAD_SIZE):
+        chunk[i] = 0
+    return chunk
+
+
 def rebuild_buffer(save_data, sectors):
     buffer = bytearray()
     headers = {}
@@ -711,7 +724,7 @@ def rebuild_buffer(save_data, sectors):
 
         if sec_id in POKEMON_STREAM_SECTORS:
             payload = save_data[off + SECTOR_HEADER_SIZE: off + SECTOR_HEADER_SIZE + SECTOR_PAYLOAD_SIZE]
-            buffer += payload
+            buffer += zero_stream_sector_tail(payload)
         elif sec_id == PRESET_SECTOR_ID:
             # Cattura l'intero settore 4 per il Preset Box
             preset_buffer = bytearray(save_data[off: off + SECTION_SIZE])
@@ -1002,8 +1015,10 @@ def write_save_HYBRID(save_data, sectors, buffer, headers, originals, filename, 
 
         # Scrittura PC Stream Standard (Box 1-25)
         save_data[off: off + SECTOR_HEADER_SIZE] = headers[sec_id]
-        chunk = buffer[cursor: cursor + p_size]
+        chunk = zero_stream_sector_tail(buffer[cursor: cursor + p_size])
         save_data[off + SECTOR_HEADER_SIZE: off + SECTOR_HEADER_SIZE + len(chunk)] = chunk
+        # 0xFF0-byte payload tail overlaps footer valid_len @ 0xFF0; restore before checksum.
+        wu32(save_data, off + 0xFF0, 0)
 
         # Per i box normali, il checksum si calcola sullo standard 0xFF4
         chk_data = save_data[off: off + 0xFF4]

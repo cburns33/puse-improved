@@ -1,0 +1,13 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "linked-save-dev",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev:linked"],
+      "cwd": "frontend",
+      "port": 5174,
+      "autoPort": false
+    }
+  ]
+}

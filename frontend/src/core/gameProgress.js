@@ -1,7 +1,7 @@
 import { ru8 } from './binary.js';
 import { findActiveSectionById } from './sections.js';
 import { readMoney, readBp } from './money.js';
-import { resolveQuickPockets, collectOwnedTmhmItemIds, mapPocketFromAnchor } from './bag.js';
+import { resolveQuickPockets, collectOwnedTmhmItemIds, mapPocketFromAnchor, ownsBagItem } from './bag.js';
 import {
     CAP_PROFILES,
     computeExpertLevelCap,
@@ -13,6 +13,8 @@ import {
 const SAVE_BLOCK1_CHUNK_SIZES = [0xFF0, 0xFF0, 0xFF0, 0xD98];
 const SAVE_BLOCK1_SECTION_IDS = [1, 2, 3, 4];
 const SAVEBLOCK1_FLAGS_OFFSET = 0x0EE0;
+const SAVEBLOCK1_ITEM_OBTAINED_FLAGS_OFFSET = 0x2F18;
+const SAVEBLOCK1_ITEM_OBTAINED_FLAGS_SIZE = 0x68;
 const EXPANDED_FLAGS_BASE = 0x900;
 const EXPANDED_FLAGS_SECTION_ID = 4;
 const EXPANDED_FLAGS_SECTION_OFFSET = 0xD98;
@@ -21,7 +23,10 @@ const EXPANDED_FLAGS_SIZE = 0x258;
 const FLAG_BADGE01_GET = 0x820;
 const FLAG_BADGE08_GET = 0x827;
 const FLAG_SYS_GAME_CLEAR = 0x82C;
+const FLAG_SYS_POKEDEX_GET = 0x829;
 const FLAG_SYS_DEXNAV = 0x91E;
+// Blizzard City DexNav handout is mid-game; FLAG_SYS_DEXNAV often stays unset on real saves.
+const DEXNAV_PROGRESS_BADGE_MIN = 3;
 
 const ITEM_HEART_SCALE = 111;
 const ITEM_DREAM_MIST = 89;
@@ -113,6 +118,27 @@ export function readEventFlag(buffer, flagId) {
     return readStandardEventFlag(buffer, id);
 }
 
+export function readItemObtainedFlag(buffer, itemId) {
+    const id = Number(itemId);
+    if (!Number.isFinite(id) || id < 0) {
+        return false;
+    }
+
+    const byteIndex = Math.floor(id / 8);
+    if (byteIndex >= SAVEBLOCK1_ITEM_OBTAINED_FLAGS_SIZE) {
+        return false;
+    }
+
+    const byteOffset = SAVEBLOCK1_ITEM_OBTAINED_FLAGS_OFFSET + byteIndex;
+    const bitIndex = id % 8;
+    const mapped = saveBlock1OffsetToSection(byteOffset);
+    if (!mapped) {
+        return false;
+    }
+
+    return readFlagBit(buffer, mapped.sectionId, mapped.relOffset, bitIndex);
+}
+
 export function countBadges(buffer) {
     let count = 0;
     for (let flagId = FLAG_BADGE01_GET; flagId <= FLAG_BADGE08_GET; flagId += 1) {
@@ -162,8 +188,32 @@ function sumItemQuantity(slots, itemId) {
     return total;
 }
 
-function hasKeyItem(slots, itemId) {
-    return sumItemQuantity(slots, itemId) > 0;
+function hasKeyItem(buffer, slots, itemId) {
+    if (sumItemQuantity(slots, itemId) > 0) {
+        return true;
+    }
+    if (ownsBagItem(buffer, itemId)) {
+        return true;
+    }
+    return readItemObtainedFlag(buffer, itemId);
+}
+
+function keyItemOwnershipSource(buffer, slots, itemId) {
+    if (sumItemQuantity(slots, itemId) > 0 || ownsBagItem(buffer, itemId)) {
+        return 'bag';
+    }
+    if (readItemObtainedFlag(buffer, itemId)) {
+        return 'item_obtained_flags';
+    }
+    return 'missing';
+}
+
+function hasDexNav(buffer) {
+    if (readEventFlag(buffer, FLAG_SYS_DEXNAV)) {
+        return true;
+    }
+    return countBadges(buffer) >= DEXNAV_PROGRESS_BADGE_MIN
+        && readEventFlag(buffer, FLAG_SYS_POKEDEX_GET);
 }
 
 function lookupItemName(itemNameById, itemId, fallback) {
@@ -177,7 +227,7 @@ export function buildGameProgressSnapshot(buffer, { itemNameById, capProfile = C
     const battlePoints = readBp(buffer);
     const badgeCount = countBadges(buffer);
     const champion = isChampion(buffer);
-    const megaUnlocked = MEGA_ACCESSORY_ITEM_IDS.some((id) => hasKeyItem(ownedSlots, id));
+    const megaUnlocked = MEGA_ACCESSORY_ITEM_IDS.some((id) => hasKeyItem(buffer, ownedSlots, id));
     const resolvedProfile = normalizeCapProfile(capProfile);
     const normalLevelCap = computeNormalLevelCap(buffer);
     const expertLevelCap = computeExpertLevelCap(buffer);
@@ -199,9 +249,9 @@ export function buildGameProgressSnapshot(buffer, { itemNameById, capProfile = C
         tm_case_owned: tmOwnership.tm_case_owned,
         owned_tmhm_item_ids: tmOwnership.owned_tmhm_item_ids,
         key_items: {
-            dexnav: readEventFlag(buffer, FLAG_SYS_DEXNAV),
-            stat_scanner: hasKeyItem(ownedSlots, ITEM_STAT_SCANNER),
-            mega_ring: hasKeyItem(ownedSlots, ITEM_MEGA_RING),
+            dexnav: hasDexNav(buffer),
+            stat_scanner: hasKeyItem(buffer, ownedSlots, ITEM_STAT_SCANNER),
+            mega_ring: hasKeyItem(buffer, ownedSlots, ITEM_MEGA_RING),
         },
         consumables: {
             heart_scale: sumItemQuantity(ownedSlots, ITEM_HEART_SCALE),
@@ -211,19 +261,21 @@ export function buildGameProgressSnapshot(buffer, { itemNameById, capProfile = C
         },
         key_items_detail: {
             dexnav: {
-                owned: readEventFlag(buffer, FLAG_SYS_DEXNAV),
-                source: 'event_flag',
+                owned: hasDexNav(buffer),
+                source: readEventFlag(buffer, FLAG_SYS_DEXNAV) ? 'event_flag' : 'progress_fallback',
                 flag_id: FLAG_SYS_DEXNAV,
             },
             stat_scanner: {
-                owned: hasKeyItem(ownedSlots, ITEM_STAT_SCANNER),
+                owned: hasKeyItem(buffer, ownedSlots, ITEM_STAT_SCANNER),
                 item_id: ITEM_STAT_SCANNER,
                 item_name: lookupItemName(itemNameById, ITEM_STAT_SCANNER, 'Stat Scanner'),
+                source: keyItemOwnershipSource(buffer, ownedSlots, ITEM_STAT_SCANNER),
             },
             mega_ring: {
-                owned: hasKeyItem(ownedSlots, ITEM_MEGA_RING),
+                owned: hasKeyItem(buffer, ownedSlots, ITEM_MEGA_RING),
                 item_id: ITEM_MEGA_RING,
                 item_name: lookupItemName(itemNameById, ITEM_MEGA_RING, 'Mega Ring'),
+                source: keyItemOwnershipSource(buffer, ownedSlots, ITEM_MEGA_RING),
             },
         },
         consumables_detail: {

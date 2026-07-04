@@ -647,6 +647,23 @@ export function scanForItemCandidates(buffer, itemId) {
     return out;
 }
 
+export function ownsBagItem(buffer, itemId) {
+    const id = Number(itemId);
+    if (!buffer?.length || !Number.isFinite(id) || id <= 0) {
+        return false;
+    }
+
+    const candidates = scanForItemCandidates(buffer, id);
+    if (!candidates.length) {
+        return false;
+    }
+
+    const activeSaveIdx = computeActiveSaveIdx(buffer, BAG_SECTOR_IDS);
+    return candidates.some(
+        (candidate) => candidate.save_idx === activeSaveIdx && Number(candidate.qty) > 0,
+    );
+}
+
 export function mapPocketFromAnchor(buffer, anchorOffset, itemNameById) {
     const [swapped, bounds] = bestPocketForAnchor(buffer, anchorOffset);
     if (!bounds) {
@@ -913,23 +930,29 @@ function resolveMainPocket(buffer) {
     };
 }
 
+const KEY_POCKET_PROBE_IDS = [368, 278, 353, 361, 364, 365, 260, 269];
+
 function resolveKeyPocket(buffer) {
-    const top = pickBestCandidate(scanForItemCandidates(buffer, 368));
-    if (!top) {
-        return null;
+    for (const probeItemId of KEY_POCKET_PROBE_IDS) {
+        const top = pickBestCandidate(scanForItemCandidates(buffer, probeItemId));
+        if (!top) {
+            continue;
+        }
+
+        return {
+            pocket_type: 'key',
+            anchor_offset: top.offset,
+            quality: top.quality,
+            score: top.score,
+            slot_count: top.pocket_slots,
+            dup_count: top.pocket_dups,
+            source: `scan_probe:${probeItemId}`,
+            confidence: top.quality === 'strict' ? 'high' : 'medium',
+            detection_note: `key pocket resolved with probe item id ${probeItemId}`,
+        };
     }
 
-    return {
-        pocket_type: 'key',
-        anchor_offset: top.offset,
-        quality: top.quality,
-        score: top.score,
-        slot_count: top.pocket_slots,
-        dup_count: top.pocket_dups,
-        source: 'scan_probe:368',
-        confidence: top.quality === 'strict' ? 'high' : 'medium',
-        detection_note: 'key pocket resolved with probe item id 368 (Porta-PC)',
-    };
+    return null;
 }
 
 function resolveTemplateBaseOffset(keyPocket) {

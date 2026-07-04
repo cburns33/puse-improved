@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowDown, ArrowUp, BookOpen, Check, ChevronDown, ExternalLink, RefreshCw, Search } from 'lucide-react';
+import { ArrowDown, ArrowUp, BookOpen, Check, ChevronDown, ExternalLink, Pencil, RefreshCw, Search } from 'lucide-react';
 import { buildUnboundDexSpeciesPageUrl } from '../core/unboundDex.js';
 import { MAX_TRACKED_DEX_ID } from '../core/pokedexFlags.js';
 import { getSpeciesTypeList } from '../core/speciesTypeFormat.js';
 import { getSpeciesBst } from '../core/statCalc.js';
+import PokedexFlagsControls from './PokedexFlagsControls.jsx';
 
 const FILTERS = [
     { id: 'all', label: 'All' },
@@ -75,6 +76,7 @@ export default function LivingDexPanel({ client }) {
     const [summary, setSummary] = useState(null);
     const [filter, setFilter] = useState('all');
     const [search, setSearch] = useState('');
+    const [expandedId, setExpandedId] = useState(null);
     const [sortKey, setSortKey] = useState('dex');
     const [sortDir, setSortDir] = useState('asc');
     const [typeFilters, setTypeFilters] = useState([]);
@@ -354,59 +356,94 @@ export default function LivingDexPanel({ client }) {
                             <th className="sticky top-0 z-10 w-24 bg-slate-900/95 backdrop-blur px-3 py-2.5 text-center">
                                 <SortHeader column="status" label="Status" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                             </th>
+                            <th className="sticky top-0 z-10 w-12 bg-slate-900/95 backdrop-blur px-3 py-2.5 text-center">
+                                <span className="text-[10px] font-black uppercase tracking-wider text-slate-500">Edit</span>
+                            </th>
                         </tr>
                     </thead>
                     <tbody>
                         {filteredEntries.length === 0 ? (
                             <tr>
-                                <td colSpan={5} className="py-16 text-center text-slate-500 italic">
+                                <td colSpan={6} className="py-16 text-center text-slate-500 italic">
                                     No species match this filter.
                                 </td>
                             </tr>
                         ) : (
                             filteredEntries.map((entry) => {
                                 const dexUrl = buildUnboundDexSpeciesPageUrl(entry.species_id, entry.species_name);
+                                const expanded = expandedId === entry.species_id;
                                 return (
-                                    <tr
-                                        key={entry.species_id}
-                                        onClick={() => window.open(dexUrl, '_blank', 'noopener,noreferrer')}
-                                        title="Open in Unbound Dex"
-                                        className="border-b border-white/5 cursor-pointer hover:bg-white/5 transition-colors"
-                                    >
-                                        <td className="px-3 py-3 text-center font-mono text-[11px] text-slate-500">#{entry.species_id}</td>
-                                        <td className="px-3 py-3 text-left">
-                                            <span className={`inline-flex items-center gap-1.5 text-sm font-semibold ${
-                                                entry.caught ? 'text-slate-100' : 'text-slate-300'
+                                    <React.Fragment key={entry.species_id}>
+                                        <tr
+                                            onClick={() => window.open(dexUrl, '_blank', 'noopener,noreferrer')}
+                                            title="Open in Unbound Dex"
+                                            className="border-b border-white/5 cursor-pointer hover:bg-white/5 transition-colors"
+                                        >
+                                            <td className="px-3 py-3 text-center font-mono text-[11px] text-slate-500">#{entry.species_id}</td>
+                                            <td className="px-3 py-3 text-left">
+                                                <span className={`inline-flex items-center gap-1.5 text-sm font-semibold ${
+                                                    entry.caught ? 'text-slate-100' : 'text-slate-300'
+                                                }`}>
+                                                    {entry.species_name}
+                                                    <ExternalLink size={11} className="shrink-0 text-violet-300" />
+                                                </span>
+                                            </td>
+                                            <td className="px-3 py-3 text-center">
+                                                {entry.types.length === 0 ? (
+                                                    <span className="text-slate-600">{'—'}</span>
+                                                ) : (
+                                                    <div className="flex flex-wrap justify-center gap-1">
+                                                        {entry.types.map((t) => (
+                                                            <span
+                                                                key={t}
+                                                                className={`inline-block rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide border ${typeBadgeClass(t)}`}
+                                                            >
+                                                                {t}
+                                                            </span>
+                                                        ))}
+                                                    </div>
+                                                )}
+                                            </td>
+                                            <td className="px-3 py-3 text-center font-mono text-[11px] text-slate-400">
+                                                {entry.bst ?? '—'}
+                                            </td>
+                                            <td className={`px-3 py-3 text-center text-[10px] font-bold uppercase tracking-wide ${
+                                                entry.caught ? 'text-emerald-300' : 'text-sky-300'
                                             }`}>
-                                                {entry.species_name}
-                                                <ExternalLink size={11} className="shrink-0 text-violet-300" />
-                                            </span>
-                                        </td>
-                                        <td className="px-3 py-3 text-center">
-                                            {entry.types.length === 0 ? (
-                                                <span className="text-slate-600">{'—'}</span>
-                                            ) : (
-                                                <div className="flex flex-wrap justify-center gap-1">
-                                                    {entry.types.map((t) => (
-                                                        <span
-                                                            key={t}
-                                                            className={`inline-block rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide border ${typeBadgeClass(t)}`}
-                                                        >
-                                                            {t}
-                                                        </span>
-                                                    ))}
-                                                </div>
-                                            )}
-                                        </td>
-                                        <td className="px-3 py-3 text-center font-mono text-[11px] text-slate-400">
-                                            {entry.bst ?? '—'}
-                                        </td>
-                                        <td className={`px-3 py-3 text-center text-[10px] font-bold uppercase tracking-wide ${
-                                            entry.caught ? 'text-emerald-300' : 'text-sky-300'
-                                        }`}>
-                                            {entry.caught ? 'Caught' : 'Seen'}
-                                        </td>
-                                    </tr>
+                                                {entry.caught ? 'Caught' : 'Seen'}
+                                            </td>
+                                            <td className="px-3 py-3 text-center">
+                                                <button
+                                                    type="button"
+                                                    onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        setExpandedId(expanded ? null : entry.species_id);
+                                                    }}
+                                                    className={`inline-flex items-center justify-center rounded-lg border p-1.5 transition-colors ${
+                                                        expanded
+                                                            ? 'border-violet-400/50 bg-violet-500/20 text-violet-200'
+                                                            : 'border-white/10 bg-slate-900/60 text-slate-400 hover:text-slate-200'
+                                                    }`}
+                                                    title="Edit Seen/Caught flags"
+                                                >
+                                                    <Pencil size={12} />
+                                                </button>
+                                            </td>
+                                        </tr>
+                                        {expanded && (
+                                            <tr className="border-b border-white/5 bg-slate-900/60">
+                                                <td colSpan={6} className="px-3 py-3" onClick={(e) => e.stopPropagation()}>
+                                                    <PokedexFlagsControls
+                                                        client={client}
+                                                        speciesId={entry.species_id}
+                                                        speciesLabel={entry.species_name}
+                                                        compact
+                                                        onUpdated={() => loadSummary()}
+                                                    />
+                                                </td>
+                                            </tr>
+                                        )}
+                                    </React.Fragment>
                                 );
                             })
                         )}

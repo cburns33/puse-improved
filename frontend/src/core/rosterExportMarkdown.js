@@ -102,7 +102,7 @@ function formatGameProgressSection(gameProgress) {
         '## Game Progress',
         `- **Badges:** ${gameProgress.badge_count ?? '—'} · **Level cap:** ${gameProgress.normal_level_cap ?? gameProgress.active_level_cap ?? '—'} (normal) / ${gameProgress.expert_level_cap ?? '—'} (expert) · **Check:** ${gameProgress.cap_profile ?? 'normal'} ${gameProgress.effective_level_cap ?? '—'} · **Champion:** ${yesNo(gameProgress.is_champion)}`,
         `- **Money:** ${formatMoney(gameProgress.money)} · **BP:** ${gameProgress.battle_points ?? '—'}`,
-        `- **Key items:** DexNav ${yesNo(keyItems.dexnav)}, Stat Scanner ${yesNo(keyItems.stat_scanner)}, Mega Ring ${yesNo(keyItems.mega_ring)}`,
+        `- **Key items:** DexNav ${yesNo(keyItems.dexnav)}, Stat Scanner ${yesNo(keyItems.stat_scanner)}, Mega Ring ${yesNo(keyItems.mega_ring || gameProgress.mega_unlocked)}`,
         `- **Consumables:** Heart Scale ×${consumables.heart_scale ?? 0}, Dream Mist ×${consumables.dream_mist ?? 0}, Bottle Cap ×${consumables.bottle_cap ?? 0}, Gold Bottle Cap ×${consumables.gold_bottle_cap ?? 0}`,
         '',
     ];

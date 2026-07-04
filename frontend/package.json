@@ -21,6 +21,7 @@
     "pokedex-flags:regression": "node scripts/pokedex-flags-regression.mjs",
     "export-selection:regression": "node scripts/export-selection-regression.mjs",
     "party-box-transfer:regression": "node scripts/party-box-transfer-regression.mjs",
+    "pc:move-regression": "node scripts/pc-move-regression.mjs",
     "speed-tier-progress:regression": "node scripts/speed-tier-progress-regression.mjs",
     "parity:all": "npm run rtc:parity-regression && npm run pc:fallback-regression && npm run identity:regression && npm run stat-calc:parity-regression && npm run level-cap:regression && npm run evolution-meta:regression && npm run roster-export:regression && npm run dex-progress:regression && npm run pokedex-flags:regression && npm run export-selection:regression && npm run party-box-transfer:regression && npm run speed-tier-progress:regression",
     "icons:manifest": "node scripts/generate-icon-manifests.mjs",
