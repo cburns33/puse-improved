@@ -15,6 +15,7 @@
 - **Selective roster export** — session-only export queue (+ toggle on party/PC); COPY/EXPORT SELECTION with detailed PC blocks for agent comparison.
 - **Cap profile selector** — Normal / Expert level-cap context for legit warnings and roster export.
 - **Stat calc + editor preview** — ROM-truth battle stat preview and Hidden Power type in the editor and roster export.
+- **Linked Save Sync** (Phase 1+2) — link a `.sav` on disk via File System Access API for live two-way sync with mGBA. Auto-reload on external changes, conflict banner when PUSE has unsaved edits, silent write-back on save. Behind `VITE_FEATURE_LINKED_SAVE=1` flag; launch with `Open PUSE Linked.bat` or `npm run dev:linked`.
 
 ### Changed
 
