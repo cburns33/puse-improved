@@ -552,6 +552,13 @@ const backendClient = {
             body: JSON.stringify(payload),
         });
     },
+    movePc(payload) {
+        return backendJson('/pc/move', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+    },
     async movePartyToBox() {
         throw new Error('Moving Pokemon is only available in local mode.');
     },
@@ -707,10 +714,10 @@ const backendClient = {
 
 const localClient = {
     getPokemonIconUrl(speciesId) {
-        return resolvePokemonIconUrl(speciesId, API_BASE);
+        return resolvePokemonIconUrl(speciesId);
     },
     getItemIconUrl(itemId) {
-        return resolveItemIconUrl(itemId, API_BASE);
+        return resolveItemIconUrl(itemId);
     },
     async uploadSave(file) {
         const { clearPcContext, loadFile, loadCatalog } = await getLocalCoreModules();
@@ -749,10 +756,14 @@ const localClient = {
             getBuffer,
             getFilename,
             getPcContext,
-            saveAll,
+            saveAll: commitSaveAll,
+            setBuffer,
+            syncPcContextFromBuffer,
         } = await getLocalCoreModules();
         const finalized = new Uint8Array(getBuffer());
-        saveAll(finalized, getPcContext());
+        commitSaveAll(finalized, getPcContext());
+        setBuffer(finalized, { dirty: true });
+        syncPcContextFromBuffer(finalized);
 
         const { isLinkedSaveActive, writeLinkedFile } = await import('../core/linkedSave.js');
         if (isLinkedSaveActive()) {
@@ -824,7 +835,10 @@ const localClient = {
         return { status: 'Species updated in memory' };
     },
     async loadPc() {
-        const { getBuffer, loadPcContext, setPcContext } = await getLocalCoreModules();
+        const { getPcContext, getBuffer, loadPcContext, setPcContext } = await getLocalCoreModules();
+        if (getPcContext()) {
+            return { message: 'PC already loaded' };
+        }
         const context = loadPcContext(getBuffer());
         setPcContext(context);
         return { message: 'PC loaded' };
@@ -900,6 +914,27 @@ const localClient = {
         }
         releasePcMon(context, payload || {});
         return { status: 'PC release buffered' };
+    },
+    async movePc(payload) {
+        const {
+            getPcContext,
+            loadPcContext,
+            setPcContext,
+            getBuffer,
+            movePcMon,
+        } = await getLocalCoreModules();
+        let context = getPcContext();
+        if (!context) {
+            context = loadPcContext(getBuffer());
+            setPcContext(context);
+        }
+        const { from_box, from_slot, to_box, to_slot } = payload || {};
+        const placed = movePcMon(
+            context,
+            { box: from_box, slot: from_slot },
+            { box: to_box, slot: to_slot ?? null },
+        );
+        return { status: 'Pokemon moved in PC', ...placed };
     },
     async insertPc(payload) {
         const {
@@ -1051,10 +1086,16 @@ const localClient = {
         return { pockets: resolveQuickPockets(getBuffer()) };
     },
     async saveAll() {
-        const { updateBuffer, saveAll: commitSaveAll, getPcContext } = await getLocalCoreModules();
-        updateBuffer((next) => {
+        const {
+            updateBuffer,
+            saveAll: commitSaveAll,
+            getPcContext,
+            syncPcContextFromBuffer,
+        } = await getLocalCoreModules();
+        const nextBuffer = updateBuffer((next) => {
             commitSaveAll(next, getPcContext());
         });
+        syncPcContextFromBuffer(nextBuffer);
         return { message: 'Save completed' };
     },
     async generateRtcRepairPack(brokenFile, fixedFile) {

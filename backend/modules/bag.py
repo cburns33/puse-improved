@@ -510,6 +510,24 @@ def _gate_unlockable_pocket(data, pocket, pocket_type, required_item_id, key_ids
     )
 
 
+KEY_POCKET_PROBE_IDS = [368, 278, 353, 361, 364, 365, 260, 269]
+
+
+def _resolve_key_pocket(data):
+    for probe_item_id in KEY_POCKET_PROBE_IDS:
+        pocket = _resolve_family_pocket(
+            data,
+            'key',
+            None,
+            probe_item_id,
+            KEY_ITEM_IDS,
+            min_slots=4,
+        )
+        if pocket:
+            return pocket
+    return None
+
+
 def resolve_quick_pockets(data):
     if not data:
         return {}
@@ -527,14 +545,7 @@ def resolve_quick_pockets(data):
         BALL_ITEM_IDS,
         min_slots=8,
     )
-    quick['key'] = _resolve_family_pocket(
-        data,
-        'key',
-        None,
-        368,
-        KEY_ITEM_IDS,
-        min_slots=4,
-    )
+    quick['key'] = _resolve_key_pocket(data)
 
     berry_raw = _resolve_family_pocket(
         data,
@@ -1273,6 +1284,22 @@ def scan_for_item_candidates(data, item_id):
         )
     )
     return out
+
+
+def owns_bag_item(data, item_id):
+    item_id = int(item_id)
+    if not data or item_id <= 0:
+        return False
+
+    candidates = scan_for_item_candidates(data, item_id)
+    if not candidates:
+        return False
+
+    active_save_idx = _compute_active_save_idx(data, BAG_SECTOR_IDS)
+    return any(
+        int(c.get("save_idx", -1)) == active_save_idx and int(c.get("qty") or 0) > 0
+        for c in candidates
+    )
 
 
 # --- MAPPATURA TASCA ---

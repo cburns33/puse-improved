@@ -7,13 +7,9 @@ import {
     isSelectionKeyActive,
     pcSelectionKey,
 } from '../core/exportSelection.js';
+import { VISIBLE_BOX_SEQUENCE, getBoxLabel } from '../core/pcBoxes.js';
 
-const VISIBLE_BOX_SEQUENCE = [...Array.from({ length: 24 }, (_, idx) => idx + 1), 26];
 const BOX_SLOTS = 30;
-
-function getBoxLabel(boxId) {
-    return Number(boxId) === 26 ? 'Preset' : `Box ${boxId}`;
-}
 
 const PCGrid = ({
     client,

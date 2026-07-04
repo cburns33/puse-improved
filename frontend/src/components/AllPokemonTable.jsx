@@ -73,11 +73,20 @@ function resolveLevel(mon) {
     return 0;
 }
 
+function boxLabelFor(mon) {
+    if (mon._source === 'party') return 'Party';
+    const box = Number(mon.box);
+    return box === 26 ? 'Preset' : `Box ${box}`;
+}
+
+function boxValueFor(mon) {
+    if (mon._source === 'party') return -1;
+    return Number(mon.box);
+}
+
 function locationLabel(mon) {
     if (mon._source === 'party') return `Party ${Number(mon._index ?? 0) + 1}`;
-    const box = Number(mon.box);
-    const boxLabel = box === 26 ? 'Preset' : `Box ${box}`;
-    return `${boxLabel} \u00B7 ${mon.slot}`;
+    return `${boxLabelFor(mon)} \u00B7 ${mon.slot}`;
 }
 
 function selectionKeyFor(mon) {
@@ -129,6 +138,9 @@ export default function AllPokemonTable({
     const [typeFilters, setTypeFilters] = useState([]);
     const [showTypeFilters, setShowTypeFilters] = useState(false);
     const typeFilterRef = useRef(null);
+    const [boxFilters, setBoxFilters] = useState([]);
+    const [showBoxFilters, setShowBoxFilters] = useState(false);
+    const boxFilterRef = useRef(null);
     const [sortKey, setSortKey] = useState('dex');
     const [sortDir, setSortDir] = useState('asc');
     const [showIvFilters, setShowIvFilters] = useState(false);
@@ -184,6 +196,8 @@ export default function AllPokemonTable({
             perfectCount,
             bst: getSpeciesBst(mon.species_id),
             location: locationLabel(mon),
+            boxValue: boxValueFor(mon),
+            boxLabel: boxLabelFor(mon),
             isShiny: Boolean(mon.is_shiny),
             isHA: Boolean(mon.is_hidden_ability),
         };
@@ -193,6 +207,14 @@ export default function AllPokemonTable({
         const set = new Set();
         decorated.forEach((row) => row.types.forEach((t) => set.add(t)));
         return [...set].sort();
+    }, [decorated]);
+
+    const boxOptions = useMemo(() => {
+        const map = new Map();
+        decorated.forEach((row) => map.set(row.boxValue, row.boxLabel));
+        return [...map.entries()]
+            .sort(([a], [b]) => a - b)
+            .map(([value, label]) => ({ value, label }));
     }, [decorated]);
 
     const ivThresholds = useMemo(() => {
@@ -231,6 +253,10 @@ export default function AllPokemonTable({
 
         if (typeFilters.length > 0) {
             list = list.filter((row) => row.types.some((t) => typeFilters.includes(t)));
+        }
+
+        if (boxFilters.length > 0) {
+            list = list.filter((row) => boxFilters.includes(row.boxValue));
         }
 
         const minTotal = totalMin === '' ? 0 : Number(totalMin);
@@ -276,7 +302,7 @@ export default function AllPokemonTable({
             if (av > bv) return 1 * dir;
             return a.speciesId - b.speciesId;
         });
-    }, [decorated, filter, typeFilters, search, sortKey, sortDir, ivThresholds, ivMode, totalMin]);
+    }, [decorated, filter, typeFilters, boxFilters, search, sortKey, sortDir, ivThresholds, ivMode, totalMin]);
 
     const selectedVisibleCount = useMemo(
         () => visible.reduce((acc, row) => acc + (isSelectionKeyActive(exportSelection, row.selectionKey) ? 1 : 0), 0),
@@ -326,6 +352,23 @@ export default function AllPokemonTable({
         document.addEventListener('mousedown', handleClickOutside);
         return () => document.removeEventListener('mousedown', handleClickOutside);
     }, [showTypeFilters]);
+
+    const toggleBoxFilter = useCallback((value) => {
+        setBoxFilters((prev) => (prev.includes(value)
+            ? prev.filter((v) => v !== value)
+            : [...prev, value]));
+    }, []);
+
+    useEffect(() => {
+        if (!showBoxFilters) return undefined;
+        const handleClickOutside = (event) => {
+            if (boxFilterRef.current && !boxFilterRef.current.contains(event.target)) {
+                setShowBoxFilters(false);
+            }
+        };
+        document.addEventListener('mousedown', handleClickOutside);
+        return () => document.removeEventListener('mousedown', handleClickOutside);
+    }, [showBoxFilters]);
 
     const handleIvMinChange = useCallback((key, value) => {
         setIvMin((prev) => ({ ...prev, [key]: clampThreshold(value) }));
@@ -452,6 +495,63 @@ export default function AllPokemonTable({
                                                 {checked && <Check size={10} />}
                                             </span>
                                             {t}
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    )}
+                </div>
+                <div className="relative" ref={boxFilterRef}>
+                    <button
+                        type="button"
+                        onClick={() => setShowBoxFilters((prev) => !prev)}
+                        className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-[10px] font-bold uppercase tracking-wide border ${
+                            boxFilters.length > 0
+                                ? 'border-amber-400/50 bg-amber-500/20 text-amber-100'
+                                : 'border-white/10 bg-slate-900/50 text-slate-400 hover:text-slate-200'
+                        }`}
+                        title="Filter by box"
+                    >
+                        {boxFilters.length === 0
+                            ? 'All boxes'
+                            : boxFilters.length === 1
+                                ? boxOptions.find((opt) => opt.value === boxFilters[0])?.label ?? 'All boxes'
+                                : `${boxFilters.length} boxes`}
+                        <ChevronDown size={12} />
+                    </button>
+                    {showBoxFilters && (
+                        <div className="absolute left-0 top-full z-30 mt-1.5 w-40 rounded-xl border border-white/10 bg-slate-900 p-2 shadow-xl shadow-black/40">
+                            <div className="flex items-center justify-between px-1 pb-1.5">
+                                <span className="text-[9px] font-black uppercase tracking-widest text-slate-500">Match any box</span>
+                                {boxFilters.length > 0 && (
+                                    <button
+                                        type="button"
+                                        onClick={() => setBoxFilters([])}
+                                        className="text-[9px] font-bold uppercase tracking-widest text-slate-400 hover:text-rose-300"
+                                    >
+                                        Clear
+                                    </button>
+                                )}
+                            </div>
+                            <div className="max-h-64 overflow-y-auto">
+                                {boxOptions.map((opt) => {
+                                    const checked = boxFilters.includes(opt.value);
+                                    return (
+                                        <button
+                                            key={opt.value}
+                                            type="button"
+                                            onClick={() => toggleBoxFilter(opt.value)}
+                                            className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11px] font-semibold transition-colors ${
+                                                checked ? 'bg-amber-500/15 text-amber-100' : 'text-slate-300 hover:bg-white/5'
+                                            }`}
+                                        >
+                                            <span className={`flex h-3.5 w-3.5 items-center justify-center rounded border ${
+                                                checked ? 'border-amber-400 bg-amber-500/40' : 'border-white/20'
+                                            }`}>
+                                                {checked && <Check size={10} />}
+                                            </span>
+                                            {opt.label}
                                         </button>
                                     );
                                 })}

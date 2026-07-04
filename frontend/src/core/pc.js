@@ -1,6 +1,6 @@
 import { ru8, ru16, ru32, wu8, wu16, wu32 } from './binary.js';
 import { gbaChecksum } from './checksum.js';
-import { OFF_ID, OFF_SAVE_IDX, SECTION_SIZE } from './sections.js';
+import { OFF_ID, OFF_SAVE_IDX, OFF_VALID_LEN, SECTION_SIZE } from './sections.js';
 import { buildSpeciesFormMeta, getSpeciesFormMeta } from './speciesForms.js';
 import { getExpAtLevel } from './growth.js';
 import speciesIdentityMeta from './speciesIdentityMeta.json' with { type: 'json' };
@@ -38,6 +38,15 @@ const FALLBACK_BOX_LAYOUTS = {
 
 const OPAQUE_SECTION_IDS = new Set([4]);
 
+// Box 23 slot 4's byte range runs past the end of its backing section (id=2) and
+// overlaps that section's id/checksum/signature/save-index footer. Writing there
+// clobbers the footer and corrupts the whole section, so this slot is read-only.
+const LOCKED_FALLBACK_SLOTS = new Set(['23:4']);
+
+function isLockedFallbackSlot(box, slot) {
+    return LOCKED_FALLBACK_SLOTS.has(`${Number(box)}:${Number(slot)}`);
+}
+
 const OFF_PID = 0x00;
 const OFF_NICK = 0x08;
 const OFF_OT_MISC_1 = 0x12;
@@ -59,6 +68,14 @@ const INV_11_MOD_25 = 16;
 const SHINY_THRESHOLD = 16;
 
 const UNBOUND_PRESET_MAGIC_LEN = 0xADC;
+
+function zeroStreamSectorTail(chunk) {
+    const out = chunk.slice(0, SECTOR_PAYLOAD_SIZE);
+    for (let i = SECTOR_PAYLOAD_SIZE - 4; i < SECTOR_PAYLOAD_SIZE; i += 1) {
+        out[i] = 0;
+    }
+    return out;
+}
 
 const CHARMAP = {
     0x00: ' ', 0x01: 'A', 0x02: 'A', 0x03: 'A', 0x04: 'C', 0x05: 'E', 0x06: 'E', 0x07: 'E', 0x08: 'E', 0x09: 'I',
@@ -119,6 +136,10 @@ function encodeText(text, maxLen = 10) {
 
 function isValidMon(raw) {
     if (!raw || raw.length < MON_SIZE_PC) {
+        return false;
+    }
+    const pid = ru32(raw, OFF_PID);
+    if (pid === 0) {
         return false;
     }
     const speciesId = ru16(raw, OFF_SPECIES);
@@ -814,7 +835,8 @@ export function loadPcContext(buffer) {
         headers[sec.id] = buffer.slice(off, off + SECTOR_HEADER_SIZE);
 
         if (POKEMON_STREAM_SECTORS.includes(sec.id)) {
-            pcChunks.push(buffer.slice(off + SECTOR_HEADER_SIZE, off + SECTOR_HEADER_SIZE + SECTOR_PAYLOAD_SIZE));
+            const raw = buffer.slice(off + SECTOR_HEADER_SIZE, off + SECTOR_HEADER_SIZE + SECTOR_PAYLOAD_SIZE);
+            pcChunks.push(zeroStreamSectorTail(raw));
         } else if (sec.id === PRESET_SECTOR_ID) {
             presetBuffer = buffer.slice(off, off + SECTION_SIZE);
         }
@@ -1110,6 +1132,9 @@ function isPcSlotOccupied(context, box, slot) {
 }
 
 function isPcSlotWritable(context, box, slot) {
+    if (isLockedFallbackSlot(box, slot)) {
+        return false;
+    }
     if (box === 26) {
         if (!context.presetBuffer) {
             return false;
@@ -1171,12 +1196,18 @@ export function insertPcMon(context, payload, speciesMap = null) {
         if (!Number.isInteger(slot) || slot < 1 || slot > 30) {
             throw new Error('Invalid slot');
         }
+        if (isLockedFallbackSlot(box, slot)) {
+            throw new Error('This slot is locked and cannot be written to.');
+        }
         if (isPcSlotOccupied(context, box, slot)) {
             throw new Error('Target slot is occupied');
         }
     } else {
         slot = null;
         for (let s = 1; s <= 30; s += 1) {
+            if (isLockedFallbackSlot(box, s) || !isPcSlotWritable(context, box, s)) {
+                continue;
+            }
             if (!isPcSlotOccupied(context, box, s)) {
                 slot = s;
                 break;
@@ -1322,12 +1353,18 @@ export function insertPcMonRaw(context, target, raw58) {
         if (!Number.isInteger(slot) || slot < 1 || slot > 30) {
             throw new Error('Invalid slot');
         }
+        if (isLockedFallbackSlot(box, slot)) {
+            throw new Error('This slot is locked and cannot be written to.');
+        }
         if (isPcSlotOccupied(context, box, slot)) {
             throw new Error('Target slot is occupied');
         }
     } else {
         slot = null;
         for (let s = 1; s <= 30; s += 1) {
+            if (isLockedFallbackSlot(box, s) || !isPcSlotWritable(context, box, s)) {
+                continue;
+            }
             if (!isPcSlotOccupied(context, box, s)) {
                 slot = s;
                 break;
@@ -1378,9 +1415,35 @@ export function insertPcMonRaw(context, target, raw58) {
     throw new Error('Slot not writable in this save layout');
 }
 
+export function movePcMon(context, source, target) {
+    const fromBox = Number(source?.box);
+    const fromSlot = Number(source?.slot);
+    const toBox = Number(target?.box);
+    if (!Number.isInteger(toBox) || toBox < 1 || toBox > 26) {
+        throw new Error('Invalid box');
+    }
+
+    if (toBox === fromBox && (target?.slot === undefined || target?.slot === null || Number(target.slot) === fromSlot)) {
+        return { box: fromBox, slot: fromSlot };
+    }
+
+    if (isLockedFallbackSlot(fromBox, fromSlot)) {
+        throw new Error('This slot is locked and cannot be moved.');
+    }
+
+    const raw = readPcMonRaw(context, fromBox, fromSlot);
+    const toSlot = target?.slot === undefined || target?.slot === null ? null : Number(target.slot);
+    const placed = insertPcMonRaw(context, { box: toBox, slot: toSlot }, raw);
+    releasePcMon(context, { box: fromBox, slot: fromSlot });
+    return placed;
+}
+
 export function editPcMonFull(context, payload) {
     const box = Number(payload.box);
     const slot = Number(payload.slot);
+    if (isLockedFallbackSlot(box, slot)) {
+        throw new Error('This slot is locked and cannot be edited.');
+    }
     const { buffer, offset, kind } = getMonBufferAndOffset(context, box, slot);
 
     const raw = buffer.slice(offset, offset + MON_SIZE_PC);
@@ -1448,6 +1511,9 @@ export function editPcMonFull(context, payload) {
 export function releasePcMon(context, payload) {
     const box = Number(payload.box);
     const slot = Number(payload.slot);
+    if (isLockedFallbackSlot(box, slot)) {
+        throw new Error('This slot is locked and cannot be released.');
+    }
     const { buffer, offset, kind } = getMonBufferAndOffset(context, box, slot);
 
     const existing = kind === 'absolute'
@@ -1498,8 +1564,10 @@ export function applyPcContextToSave(buffer, context) {
             buffer.set(header, off);
         }
 
-        const chunk = context.pcBuffer.slice(cursor, cursor + SECTOR_PAYLOAD_SIZE);
+        const chunk = zeroStreamSectorTail(context.pcBuffer.slice(cursor, cursor + SECTOR_PAYLOAD_SIZE));
         buffer.set(chunk, off + SECTOR_HEADER_SIZE);
+        // The 0xFF0-byte PC payload ends at 0xFF3 and overlaps the footer valid_len field.
+        wu32(buffer, off + OFF_VALID_LEN, 0);
 
         const chk = gbaChecksum(buffer, off, 0xFF4);
         wu16(buffer, off + 0xFF6, chk);

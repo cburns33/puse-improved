@@ -82,6 +82,35 @@ BP_OFFSET_IN_SECTION = 0xF34
 BP_MIN = 0
 BP_MAX = 65535
 
+# Box 23 slot 4's byte range runs past the end of its backing section (id=2) and
+# overlaps that section's id/checksum/signature/save-index footer. Writing there
+# clobbers the footer and corrupts the whole section, so this slot is read-only.
+LOCKED_FALLBACK_SLOTS = {(23, 4)}
+
+
+def _is_locked_fallback_slot(box, slot):
+    return (int(box), int(slot)) in LOCKED_FALLBACK_SLOTS
+
+
+def _pc_slot_writable(box, slot):
+    box = int(box)
+    slot = int(slot)
+    ctx = current_save["pc_context"]
+    if box == 26:
+        preset_buf = ctx.get("preset_buffer")
+        if not preset_buf:
+            return False
+        off = box_mod.OFFSET_PRESET_START + (slot - 1) * box_mod.MON_SIZE_PC
+        return off + box_mod.MON_SIZE_PC <= len(preset_buf)
+
+    stream_off = ((box - 1) * 30 + (slot - 1)) * box_mod.MON_SIZE_PC
+    pc_buf = ctx.get("pc_buffer") or b""
+    if stream_off + box_mod.MON_SIZE_PC <= len(pc_buf):
+        return True
+
+    slot_offsets = ctx.get("fallback_slot_offsets", {}).get(box, {})
+    return slot in slot_offsets
+
 
 def _should_track_absolute_sector_for_checksum(data, sector_off):
     if sector_off < 0 or sector_off + box_mod.SECTION_SIZE > len(data):
@@ -1590,6 +1619,9 @@ class PCInsert(BaseModel):
 
 @app.post("/pc/edit-full")
 async def edit_pc_mon_full(upd: PCFullUpdate):
+    if _is_locked_fallback_slot(upd.box, upd.slot):
+        raise HTTPException(status_code=400, detail="This slot is locked and cannot be edited.")
+
     # Find pokemon in loaded context
     target = next((m for m in current_save["pc_context"]["mons"]
                    if m.box == upd.box and m.slot == upd.slot), None)
@@ -1677,10 +1709,16 @@ async def insert_pc_mon(upd: PCInsert):
         slot = int(slot)
         if slot < 1 or slot > 30:
             raise HTTPException(status_code=400, detail="Invalid slot")
+        if _is_locked_fallback_slot(box, slot):
+            raise HTTPException(status_code=400, detail="This slot is locked and cannot be written to.")
         if slot in occupied:
             raise HTTPException(status_code=400, detail="Target slot is occupied")
     else:
-        slot = next((s for s in range(1, 31) if s not in occupied), None)
+        slot = next(
+            (s for s in range(1, 31)
+             if s not in occupied and not _is_locked_fallback_slot(box, s) and _pc_slot_writable(box, s)),
+            None,
+        )
         if slot is None:
             raise HTTPException(status_code=400, detail="Box is full")
 
@@ -1819,6 +1857,9 @@ async def release_pc_mon(upd: PCRelease):
     if not current_save["data"]:
         raise HTTPException(status_code=400, detail="Upload a .sav file")
 
+    if _is_locked_fallback_slot(upd.box, upd.slot):
+        raise HTTPException(status_code=400, detail="This slot is locked and cannot be released.")
+
     ctx = current_save["pc_context"]
     if ctx.get("pc_buffer") is None:
         await load_pc()
@@ -1851,6 +1892,123 @@ async def release_pc_mon(upd: PCRelease):
                    if not (m.box == upd.box and m.slot == upd.slot)]
 
     return {"status": "Pokemon released from PC", "box": upd.box, "slot": upd.slot}
+
+
+class PCMove(BaseModel):
+    from_box: int
+    from_slot: int
+    to_box: int
+    to_slot: int = None
+
+
+@app.post("/pc/move")
+async def move_pc_mon(upd: PCMove):
+    if not current_save["data"]:
+        raise HTTPException(status_code=400, detail="Upload a .sav file")
+
+    ctx = current_save["pc_context"]
+    if ctx.get("pc_buffer") is None:
+        await load_pc()
+        ctx = current_save["pc_context"]
+
+    source = next((m for m in ctx["mons"]
+                   if m.box == upd.from_box and m.slot == upd.from_slot), None)
+    if not source:
+        raise HTTPException(status_code=404, detail="Pokemon not found in PC")
+
+    to_box = int(upd.to_box)
+    if to_box < 1 or to_box > 26:
+        raise HTTPException(status_code=400, detail="Invalid box")
+
+    if to_box == upd.from_box and (upd.to_slot is None or int(upd.to_slot) == upd.from_slot):
+        return {"status": "Pokemon moved in PC", "box": upd.from_box, "slot": upd.from_slot}
+
+    if _is_locked_fallback_slot(upd.from_box, upd.from_slot):
+        raise HTTPException(status_code=400, detail="This slot is locked and cannot be moved.")
+
+    occupied = {int(m.slot) for m in ctx.get("mons", [])
+                if int(m.box) == to_box and not (m.box == upd.from_box and m.slot == upd.from_slot)}
+
+    to_slot = upd.to_slot
+    if to_slot is not None:
+        to_slot = int(to_slot)
+        if to_slot < 1 or to_slot > 30:
+            raise HTTPException(status_code=400, detail="Invalid slot")
+        if _is_locked_fallback_slot(to_box, to_slot):
+            raise HTTPException(status_code=400, detail="This slot is locked and cannot be written to.")
+        if to_slot in occupied:
+            raise HTTPException(status_code=400, detail="Target slot is occupied")
+    else:
+        to_slot = next(
+            (s for s in range(1, 31)
+             if s not in occupied and not _is_locked_fallback_slot(to_box, s) and _pc_slot_writable(to_box, s)),
+            None,
+        )
+        if to_slot is None:
+            raise HTTPException(status_code=400, detail="Box is full")
+
+    kind = "stream"
+    off = None
+    if to_box == 26:
+        kind = "preset"
+        off = box_mod.OFFSET_PRESET_START + ((to_slot - 1) * box_mod.MON_SIZE_PC)
+        if off + box_mod.MON_SIZE_PC > len(ctx["preset_buffer"]):
+            raise HTTPException(status_code=400, detail="Invalid preset slot")
+    else:
+        stream_off = ((to_box - 1) * 30 + (to_slot - 1)) * box_mod.MON_SIZE_PC
+        pc_buf = ctx["pc_buffer"]
+        if stream_off + box_mod.MON_SIZE_PC <= len(pc_buf):
+            off = stream_off
+        else:
+            has_fallback = bool(ctx.get("fallback_box_starts", {}).get(to_box))
+            slot_offsets = ctx.get("fallback_slot_offsets", {}).get(int(to_box), {})
+            abs_off = slot_offsets.get(int(to_slot)) if has_fallback else None
+            if abs_off is None or abs_off + box_mod.MON_SIZE_PC > len(current_save["data"]):
+                raise HTTPException(status_code=400, detail="Slot not writable in this save layout")
+            kind = "absolute"
+            off = abs_off
+
+    raw = bytes(source.raw)
+
+    # Clear the source slot first (mirrors /pc/release ordering).
+    empty = bytes(box_mod.MON_SIZE_PC)
+    if source.box == 26:
+        src_off = source.buffer_offset
+        ctx["preset_buffer"][src_off: src_off + box_mod.MON_SIZE_PC] = empty
+    elif getattr(source, "buffer_kind", None) == "absolute":
+        src_off = source.buffer_offset
+        current_save["data"][src_off: src_off + box_mod.MON_SIZE_PC] = empty
+        sector_off = (src_off // box_mod.SECTION_SIZE) * box_mod.SECTION_SIZE
+        if _should_track_absolute_sector_for_checksum(current_save["data"], sector_off):
+            touched = set(ctx.get("absolute_touched_sectors", []))
+            touched.add(sector_off)
+            ctx["absolute_touched_sectors"] = sorted(touched)
+    else:
+        src_off = ((source.box - 1) * 30 + (source.slot - 1)) * box_mod.MON_SIZE_PC
+        ctx["pc_buffer"][src_off: src_off + box_mod.MON_SIZE_PC] = empty
+
+    if kind == "preset":
+        ctx["preset_buffer"][off: off + box_mod.MON_SIZE_PC] = raw
+    elif kind == "absolute":
+        current_save["data"][off: off + box_mod.MON_SIZE_PC] = raw
+        sector_off = (off // box_mod.SECTION_SIZE) * box_mod.SECTION_SIZE
+        if _should_track_absolute_sector_for_checksum(current_save["data"], sector_off):
+            touched = set(ctx.get("absolute_touched_sectors", []))
+            touched.add(sector_off)
+            ctx["absolute_touched_sectors"] = sorted(touched)
+    else:
+        ctx["pc_buffer"][off: off + box_mod.MON_SIZE_PC] = raw
+
+    source.raw = bytearray(raw)
+    source.box = to_box
+    source.slot = to_slot
+    source.buffer_offset = off
+    if kind == "absolute":
+        source.buffer_kind = "absolute"
+    elif hasattr(source, "buffer_kind"):
+        source.buffer_kind = None
+
+    return {"status": "Pokemon moved in PC", "box": to_box, "slot": to_slot}
 
 
 @app.post("/save-all")

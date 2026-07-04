@@ -7,6 +7,8 @@ from modules import money as money_mod
 SAVE_BLOCK1_CHUNK_SIZES = [0xFF0, 0xFF0, 0xFF0, 0xD98]
 SAVE_BLOCK1_SECTION_IDS = [1, 2, 3, 4]
 SAVEBLOCK1_FLAGS_OFFSET = 0x0EE0
+SAVEBLOCK1_ITEM_OBTAINED_FLAGS_OFFSET = 0x2F18
+SAVEBLOCK1_ITEM_OBTAINED_FLAGS_SIZE = 0x68
 EXPANDED_FLAGS_BASE = 0x900
 EXPANDED_FLAGS_SECTION_ID = 4
 EXPANDED_FLAGS_SECTION_OFFSET = 0xD98
@@ -15,7 +17,10 @@ EXPANDED_FLAGS_SIZE = 0x258
 FLAG_BADGE01_GET = 0x820
 FLAG_BADGE08_GET = 0x827
 FLAG_SYS_GAME_CLEAR = 0x82C
+FLAG_SYS_POKEDEX_GET = 0x829
 FLAG_SYS_DEXNAV = 0x91E
+# Blizzard City DexNav handout is mid-game; FLAG_SYS_DEXNAV often stays unset on real saves.
+DEXNAV_PROGRESS_BADGE_MIN = 3
 
 ITEM_HEART_SCALE = 111
 ITEM_DREAM_MIST = 89
@@ -111,6 +116,24 @@ def read_event_flag(buf, flag_id):
     return _read_standard_event_flag(buf, flag)
 
 
+def read_item_obtained_flag(buf, item_id):
+    item_id = int(item_id)
+    if item_id < 0:
+        return False
+
+    byte_index = item_id // 8
+    if byte_index >= SAVEBLOCK1_ITEM_OBTAINED_FLAGS_SIZE:
+        return False
+
+    byte_offset = SAVEBLOCK1_ITEM_OBTAINED_FLAGS_OFFSET + byte_index
+    bit_index = item_id % 8
+    mapped = _save_block1_offset_to_section(byte_offset)
+    if not mapped:
+        return False
+
+    return _read_flag_bit(buf, mapped["section_id"], mapped["rel_offset"], bit_index)
+
+
 def count_badges(buf):
     count = 0
     for flag_id in range(FLAG_BADGE01_GET, FLAG_BADGE08_GET + 1):
@@ -176,8 +199,26 @@ def _sum_item_quantity(slots, item_id):
     return total
 
 
-def _has_key_item(slots, item_id):
-    return _sum_item_quantity(slots, item_id) > 0
+def _has_key_item(buf, slots, item_id):
+    if _sum_item_quantity(slots, item_id) > 0:
+        return True
+    if bag_mod.owns_bag_item(buf, item_id):
+        return True
+    return read_item_obtained_flag(buf, item_id)
+
+
+def _key_item_ownership_source(buf, slots, item_id):
+    if _sum_item_quantity(slots, item_id) > 0 or bag_mod.owns_bag_item(buf, item_id):
+        return "bag"
+    if read_item_obtained_flag(buf, item_id):
+        return "item_obtained_flags"
+    return "missing"
+
+
+def _has_dexnav(buf):
+    if read_event_flag(buf, FLAG_SYS_DEXNAV):
+        return True
+    return count_badges(buf) >= DEXNAV_PROGRESS_BADGE_MIN and read_event_flag(buf, FLAG_SYS_POKEDEX_GET)
 
 
 def _lookup_item_name(item_name_by_id, item_id, fallback):
@@ -216,7 +257,7 @@ def build_game_progress_snapshot(buf, item_name_by_id=None, cap_profile=CAP_PROF
     battle_points = _read_bp(buf)
     badge_count = count_badges(buf)
     champion = is_champion(buf)
-    mega_unlocked = any(_has_key_item(owned_slots, item_id) for item_id in MEGA_ACCESSORY_ITEM_IDS)
+    mega_unlocked = any(_has_key_item(buf, owned_slots, item_id) for item_id in MEGA_ACCESSORY_ITEM_IDS)
     resolved_profile = normalize_cap_profile(cap_profile)
     normal_level_cap = compute_normal_level_cap(buf)
     expert_level_cap = compute_expert_level_cap(buf)
@@ -238,9 +279,9 @@ def build_game_progress_snapshot(buf, item_name_by_id=None, cap_profile=CAP_PROF
         "tm_case_owned": tm_ownership["tm_case_owned"],
         "owned_tmhm_item_ids": tm_ownership["owned_tmhm_item_ids"],
         "key_items": {
-            "dexnav": read_event_flag(buf, FLAG_SYS_DEXNAV),
-            "stat_scanner": _has_key_item(owned_slots, ITEM_STAT_SCANNER),
-            "mega_ring": _has_key_item(owned_slots, ITEM_MEGA_RING),
+            "dexnav": _has_dexnav(buf),
+            "stat_scanner": _has_key_item(buf, owned_slots, ITEM_STAT_SCANNER),
+            "mega_ring": _has_key_item(buf, owned_slots, ITEM_MEGA_RING),
         },
         "consumables": {
             "heart_scale": _sum_item_quantity(owned_slots, ITEM_HEART_SCALE),
@@ -250,19 +291,21 @@ def build_game_progress_snapshot(buf, item_name_by_id=None, cap_profile=CAP_PROF
         },
         "key_items_detail": {
             "dexnav": {
-                "owned": read_event_flag(buf, FLAG_SYS_DEXNAV),
-                "source": "event_flag",
+                "owned": _has_dexnav(buf),
+                "source": "event_flag" if read_event_flag(buf, FLAG_SYS_DEXNAV) else "progress_fallback",
                 "flag_id": FLAG_SYS_DEXNAV,
             },
             "stat_scanner": {
-                "owned": _has_key_item(owned_slots, ITEM_STAT_SCANNER),
+                "owned": _has_key_item(buf, owned_slots, ITEM_STAT_SCANNER),
                 "item_id": ITEM_STAT_SCANNER,
                 "item_name": _lookup_item_name(item_name_by_id, ITEM_STAT_SCANNER, "Stat Scanner"),
+                "source": _key_item_ownership_source(buf, owned_slots, ITEM_STAT_SCANNER),
             },
             "mega_ring": {
-                "owned": _has_key_item(owned_slots, ITEM_MEGA_RING),
+                "owned": _has_key_item(buf, owned_slots, ITEM_MEGA_RING),
                 "item_id": ITEM_MEGA_RING,
                 "item_name": _lookup_item_name(item_name_by_id, ITEM_MEGA_RING, "Mega Ring"),
+                "source": _key_item_ownership_source(buf, owned_slots, ITEM_MEGA_RING),
             },
         },
         "consumables_detail": {

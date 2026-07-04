@@ -23,7 +23,10 @@ export function getThreatsForBoss(bossName) {
 const GYM_TRAINER_RE = /^\s*(\d+)\s*\./;
 
 // A milestone is "cleared" relative to live save progress. Gym leaders are gated
-// by badge count; Successor Maxima awards a Mega accessory (mega_unlocked); the
+// by badge count; Successor Maxima is a mandatory story gate between badge 4 (Mel)
+// and badge 5 (Galavan), so 5+ badges alone proves it's cleared — the mega_unlocked
+// item check is only needed to detect clearing it before the 5th badge registers,
+// and can't be trusted alone since the Mega accessory may no longer be held; the
 // Elite Four / rival finale only clears once the game is beaten (champion).
 export function isMilestoneCleared(entry, gameProgress = {}) {
     const badgeCount = Number(gameProgress?.badge_count) || 0;
@@ -32,7 +35,7 @@ export function isMilestoneCleared(entry, gameProgress = {}) {
         return badgeCount >= Number(gymMatch[1]);
     }
     if (/maxima/i.test(entry?.boss_name || '') || /successor/i.test(entry?.trainer || '')) {
-        return Boolean(gameProgress?.mega_unlocked);
+        return badgeCount >= 5 || Boolean(gameProgress?.mega_unlocked);
     }
     return Boolean(gameProgress?.is_champion);
 }

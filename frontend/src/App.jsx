@@ -23,15 +23,18 @@ import {
     BookOpen,
     Link,
     RefreshCw,
+    FolderInput,
 } from 'lucide-react';
 import { createApiClient, getInitialRuntimeMode, getInitialCapProfile, persistRuntimeMode, persistCapProfile, RUNTIME_MODES } from './services/apiClient.js';
 import { getExpAtLevel, getSpeciesGrowthRate } from './core/growth.js';
 import {
     addPcBoxToSelection,
     parseSelectionKey,
+    pcSelectionKey,
     summarizeSelection,
     toggleSelectionKey,
 } from './core/exportSelection.js';
+import { VISIBLE_BOX_SEQUENCE, getBoxLabel } from './core/pcBoxes.js';
 import {
     isLinkedSaveEnabled,
     linkSaveFile,
@@ -78,6 +81,7 @@ const App = () => {
     const [partyCopied, setPartyCopied] = useState(false);
     const [selectionCopied, setSelectionCopied] = useState(false);
     const [exportSelection, setExportSelection] = useState([]);
+    const [moveTargetBox, setMoveTargetBox] = useState(VISIBLE_BOX_SEQUENCE[0]);
     const client = useMemo(() => createApiClient(runtimeMode, { capProfile }), [runtimeMode, capProfile]);
     const exportSelectionSummary = useMemo(
         () => summarizeSelection(exportSelection),
@@ -571,20 +575,79 @@ const App = () => {
         );
         if (!proceed) return;
 
-        try {
-            for (const target of pcTargets) {
+        const releasedKeys = [];
+        const failures = [];
+        for (const target of pcTargets) {
+            try {
                 await client.releasePc({ box: target.box, slot: target.slot });
+                releasedKeys.push(pcSelectionKey(target.box, target.slot));
+            } catch (err) {
+                failures.push({ target, message: err?.message || 'Failed to release' });
             }
-            await client.saveAll();
-            setExportSelection((prev) => prev.filter((key) => {
-                const parsed = parseSelectionKey(key);
-                return !(parsed && parsed.source === 'pc');
-            }));
-            setRefreshKey(prev => prev + 1);
-            alert(`Released ${pcTargets.length} Pokemon from the PC.`);
-        } catch {
-            alert("Failed to release the selected Pokemon.");
         }
+
+        if (releasedKeys.length > 0) {
+            try {
+                await client.saveAll();
+            } catch {
+                alert('Released Pokemon in memory, but failed to save. Try again.');
+                return;
+            }
+            setExportSelection((prev) => prev.filter((key) => !releasedKeys.includes(key)));
+            setRefreshKey(prev => prev + 1);
+        }
+
+        const failureNote = failures.length > 0
+            ? ` ${failures.length} skipped: ${failures.map((f) => `Box ${f.target.box} slot ${f.target.slot} (${f.message})`).join('; ')}`
+            : '';
+        alert(`Released ${releasedKeys.length} Pokemon from the PC.${failureNote}`);
+    };
+
+    const handleMoveSelectedToBox = async (targetBox) => {
+        const toBox = Number(targetBox);
+        const pcTargets = exportSelection
+            .map(parseSelectionKey)
+            .filter((parsed) => parsed && parsed.source === 'pc');
+        const skippedParty = exportSelection.length - pcTargets.length;
+
+        if (pcTargets.length === 0) {
+            alert("No PC Pokemon are selected. Party Pokemon can't be moved here.");
+            return;
+        }
+
+        const movedKeys = [];
+        const failures = [];
+        for (const target of pcTargets) {
+            try {
+                await client.movePc({
+                    from_box: target.box,
+                    from_slot: target.slot,
+                    to_box: toBox,
+                });
+                movedKeys.push(pcSelectionKey(target.box, target.slot));
+            } catch (err) {
+                failures.push({ target, message: err?.message || 'Failed to move' });
+            }
+        }
+
+        if (movedKeys.length > 0) {
+            try {
+                await client.saveAll();
+            } catch {
+                alert('Moved Pokemon in memory, but failed to save. Try again.');
+                return;
+            }
+            setExportSelection((prev) => prev.filter((key) => !movedKeys.includes(key)));
+            setRefreshKey(prev => prev + 1);
+        }
+
+        const partyNote = skippedParty > 0
+            ? ` ${skippedParty} selected party Pokemon were skipped (party moves aren't supported here).`
+            : '';
+        const failureNote = failures.length > 0
+            ? ` ${failures.length} skipped: ${failures.map((f) => `Box ${f.target.box} slot ${f.target.slot} (${f.message})`).join('; ')}`
+            : '';
+        alert(`Moved ${movedKeys.length} Pokemon to ${getBoxLabel(toBox)}.${partyNote}${failureNote}`);
     };
 
     const handleMovePartyToBox = async (pk) => {
@@ -775,6 +838,29 @@ const App = () => {
                             </button>
                             {exportSelection.length > 0 && (
                                 <>
+                                    {exportSelectionSummary.pc > 0 && (
+                                        <div className="flex items-center gap-1 px-2 py-1 rounded-full bg-slate-900 border border-violet-400/30">
+                                            <select
+                                                value={moveTargetBox}
+                                                onChange={(e) => setMoveTargetBox(Number(e.target.value))}
+                                                className="bg-transparent text-[11px] font-bold text-violet-200 outline-none"
+                                                title="Destination box"
+                                            >
+                                                {VISIBLE_BOX_SEQUENCE.map((boxId) => (
+                                                    <option key={boxId} value={boxId} className="bg-slate-900 text-slate-100">
+                                                        {getBoxLabel(boxId)}
+                                                    </option>
+                                                ))}
+                                            </select>
+                                            <button
+                                                onClick={() => handleMoveSelectedToBox(moveTargetBox)}
+                                                className="flex items-center gap-1.5 px-2 py-1 rounded-full text-[11px] font-bold text-violet-100 hover:bg-violet-600/25 transition-all"
+                                                title="Move selected PC Pokemon to the chosen box"
+                                            >
+                                                <FolderInput size={14} /> MOVE
+                                            </button>
+                                        </div>
+                                    )}
                                     <button
                                         onClick={handleCopySelection}
                                         className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-[11px] font-bold transition-all ${

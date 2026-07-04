@@ -93,3 +93,16 @@ export function setPcContext(pcContext) {
 export function clearPcContext() {
     session.pcContext = null;
 }
+
+export function syncPcContextFromBuffer(buffer) {
+    if (!session.pcContext || !(buffer instanceof Uint8Array)) {
+        return;
+    }
+    session.pcContext.sourceBuffer = buffer;
+    if (session.pcContext.absoluteEdits) {
+        session.pcContext.absoluteEdits.clear();
+    }
+    if (session.pcContext.absoluteTouchedSectors) {
+        session.pcContext.absoluteTouchedSectors.clear();
+    }
+}
