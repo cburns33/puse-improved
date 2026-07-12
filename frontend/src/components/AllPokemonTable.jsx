@@ -7,6 +7,11 @@ import { NATURES } from '../core/showdownImport.js';
 import ExportToggleButton from './ExportToggleButton.jsx';
 import { isSelectionKeyActive, partySelectionKey, pcSelectionKey } from '../core/exportSelection.js';
 import { getSpeciesTypeList } from '../core/speciesTypeFormat.js';
+import speciesHeightWeight from '../core/species_height_weight.json' with { type: 'json' };
+
+function getSpeciesHeightWeight(speciesId) {
+    return speciesHeightWeight[String(speciesId)] || null;
+}
 
 const IV_COLUMNS = [
     { key: 'hp', label: 'HP', path: 'HP' },
@@ -19,10 +24,20 @@ const IV_COLUMNS = [
 
 const FILTERS = [
     { id: 'all', label: 'All' },
-    { id: 'perfect2', label: '2+ perfect IVs' },
     { id: 'shiny', label: 'Shiny' },
     { id: 'ha', label: 'Hidden ability' },
-    { id: 'flawless', label: '6 IV' },
+];
+
+const IV_PRESET_FILTERS = [
+    { id: 'perfect2', label: '2+ Perfect IVs' },
+    { id: 'flawless', label: '6 Perfect IVs' },
+];
+
+const SORT_OPTIONS = [
+    { key: 'height', dir: 'asc', label: 'Height (Asc.)' },
+    { key: 'height', dir: 'desc', label: 'Height (Desc.)' },
+    { key: 'weight', dir: 'asc', label: 'Weight (Asc.)' },
+    { key: 'weight', dir: 'desc', label: 'Weight (Desc.)' },
 ];
 
 const EMPTY_IV_MIN = { hp: '', atk: '', def: '', spa: '', spd: '', spe: '' };
@@ -133,6 +148,7 @@ export default function AllPokemonTable({
     const [rows, setRows] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
+    const [moveNameById, setMoveNameById] = useState(null);
     const [search, setSearch] = useState('');
     const [filter, setFilter] = useState('all');
     const [typeFilters, setTypeFilters] = useState([]);
@@ -141,6 +157,8 @@ export default function AllPokemonTable({
     const [boxFilters, setBoxFilters] = useState([]);
     const [showBoxFilters, setShowBoxFilters] = useState(false);
     const boxFilterRef = useRef(null);
+    const [showSortMenu, setShowSortMenu] = useState(false);
+    const sortMenuRef = useRef(null);
     const [sortKey, setSortKey] = useState('dex');
     const [sortDir, setSortDir] = useState('asc');
     const [showIvFilters, setShowIvFilters] = useState(false);
@@ -166,6 +184,18 @@ export default function AllPokemonTable({
         load();
     }, [load]);
 
+    useEffect(() => {
+        let cancelled = false;
+        client.getMoves().then((moves) => {
+            if (cancelled) return;
+            const map = new Map((Array.isArray(moves) ? moves : []).map((m) => [Number(m.id), m.name]));
+            setMoveNameById(map);
+        }).catch(() => {
+            if (!cancelled) setMoveNameById(new Map());
+        });
+        return () => { cancelled = true; };
+    }, [client]);
+
     const decorated = useMemo(() => rows.map((mon) => {
         const ivs = mon.ivs || {};
         const iv = {
@@ -179,8 +209,12 @@ export default function AllPokemonTable({
         const ivTotal = iv.hp + iv.atk + iv.def + iv.spa + iv.spd + iv.spe;
         const perfectCount = IV_COLUMNS.reduce((acc, col) => acc + (iv[col.key] === 31 ? 1 : 0), 0);
         const types = getSpeciesTypeList(mon.species_id, { resolveFairy: true });
+        const moveNames = (mon.moves || [])
+            .map((id) => moveNameById?.get(Number(id)))
+            .filter(Boolean);
         return {
             mon,
+            moveNames,
             key: mon._source === 'party' ? `party-${mon._index}` : `pc-${mon.box}-${mon.slot}`,
             selectionKey: selectionKeyFor(mon),
             name: mon.nickname || mon.species_name || '',
@@ -195,13 +229,15 @@ export default function AllPokemonTable({
             ivTotal,
             perfectCount,
             bst: getSpeciesBst(mon.species_id),
+            heightIn: getSpeciesHeightWeight(mon.species_id)?.height_in ?? null,
+            weightLb: getSpeciesHeightWeight(mon.species_id)?.weight_lb ?? null,
             location: locationLabel(mon),
             boxValue: boxValueFor(mon),
             boxLabel: boxLabelFor(mon),
             isShiny: Boolean(mon.is_shiny),
             isHA: Boolean(mon.is_hidden_ability),
         };
-    }), [rows]);
+    }), [rows, moveNameById]);
 
     const typeOptions = useMemo(() => {
         const set = new Set();
@@ -229,7 +265,8 @@ export default function AllPokemonTable({
     }, [ivMin]);
 
     const ivFilterActive = Object.keys(ivThresholds).length > 0
-        || (totalMin !== '' && Number(totalMin) > 0);
+        || (totalMin !== '' && Number(totalMin) > 0)
+        || IV_PRESET_FILTERS.some((preset) => preset.id === filter);
 
     const visible = useMemo(() => {
         let list = decorated;
@@ -276,7 +313,8 @@ export default function AllPokemonTable({
             list = list.filter((row) =>
                 row.name.toLowerCase().includes(q)
                 || row.species.toLowerCase().includes(q)
-                || String(row.speciesId).includes(q));
+                || String(row.speciesId).includes(q)
+                || row.moveNames.some((name) => name.toLowerCase() === q));
         }
 
         const dir = sortDir === 'asc' ? 1 : -1;
@@ -290,6 +328,8 @@ export default function AllPokemonTable({
             case 'level': return row.level;
             case 'total': return row.ivTotal;
             case 'bst': return row.bst ?? 0;
+            case 'height': return row.heightIn ?? 0;
+            case 'weight': return row.weightLb ?? 0;
             case 'dex': return row.speciesId;
             default: return row.iv[sortKey] ?? 0;
             }
@@ -318,16 +358,24 @@ export default function AllPokemonTable({
         [decorated, exportSelection],
     );
 
+    const sortKeyRef = useRef(sortKey);
+    useEffect(() => {
+        sortKeyRef.current = sortKey;
+    }, [sortKey]);
+
     const handleSort = useCallback((key) => {
-        setSortKey((prevKey) => {
-            if (prevKey === key) {
-                setSortDir((prevDir) => (prevDir === 'asc' ? 'desc' : 'asc'));
-                return prevKey;
-            }
-            const stringKeys = new Set(['name', 'nature', 'type', 'ability', 'location']);
-            setSortDir(stringKeys.has(key) ? 'asc' : 'desc');
-            return key;
-        });
+        if (sortKeyRef.current === key) {
+            setSortDir((prevDir) => (prevDir === 'asc' ? 'desc' : 'asc'));
+            return;
+        }
+        const stringKeys = new Set(['name', 'nature', 'type', 'ability', 'location']);
+        setSortDir(stringKeys.has(key) ? 'asc' : 'desc');
+        setSortKey(key);
+    }, []);
+
+    const handleSortWithDir = useCallback((key, dir) => {
+        setSortKey(key);
+        setSortDir(dir);
     }, []);
 
     const handleToggleAllVisible = useCallback(() => {
@@ -370,6 +418,17 @@ export default function AllPokemonTable({
         return () => document.removeEventListener('mousedown', handleClickOutside);
     }, [showBoxFilters]);
 
+    useEffect(() => {
+        if (!showSortMenu) return undefined;
+        const handleClickOutside = (event) => {
+            if (sortMenuRef.current && !sortMenuRef.current.contains(event.target)) {
+                setShowSortMenu(false);
+            }
+        };
+        document.addEventListener('mousedown', handleClickOutside);
+        return () => document.removeEventListener('mousedown', handleClickOutside);
+    }, [showSortMenu]);
+
     const handleIvMinChange = useCallback((key, value) => {
         setIvMin((prev) => ({ ...prev, [key]: clampThreshold(value) }));
     }, []);
@@ -377,6 +436,7 @@ export default function AllPokemonTable({
     const clearIvFilters = useCallback(() => {
         setIvMin(EMPTY_IV_MIN);
         setTotalMin('');
+        setFilter((prev) => (IV_PRESET_FILTERS.some((preset) => preset.id === prev) ? 'all' : prev));
     }, []);
 
     if (loading) {
@@ -427,7 +487,7 @@ export default function AllPokemonTable({
                         type="text"
                         value={search}
                         onChange={(e) => setSearch(e.target.value)}
-                        placeholder="Search by nickname, species, or dex ID..."
+                        placeholder="Search by nickname, species, dex ID, or exact move name..."
                         className="w-full rounded-xl border border-white/10 bg-slate-900 py-2.5 pl-10 pr-4 text-sm outline-none focus:border-blue-500/50"
                     />
                 </div>
@@ -571,10 +631,68 @@ export default function AllPokemonTable({
                     <SlidersHorizontal size={12} />
                     IV filters{ivFilterActive ? ' \u25CF' : ''}
                 </button>
+                <div className="relative" ref={sortMenuRef}>
+                    <button
+                        type="button"
+                        onClick={() => setShowSortMenu((prev) => !prev)}
+                        className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-[10px] font-bold uppercase tracking-wide border ${
+                            SORT_OPTIONS.some((opt) => opt.key === sortKey && opt.dir === sortDir)
+                                ? 'border-blue-400/50 bg-blue-500/20 text-blue-100'
+                                : 'border-white/10 bg-slate-900/50 text-slate-400 hover:text-slate-200'
+                        }`}
+                        title="Sort by height/weight"
+                    >
+                        {SORT_OPTIONS.find((opt) => opt.key === sortKey && opt.dir === sortDir)?.label ?? 'Sort'}
+                        <ChevronDown size={12} />
+                    </button>
+                    {showSortMenu && (
+                        <div className="absolute left-0 top-full z-30 mt-1.5 w-44 rounded-xl border border-white/10 bg-slate-900 p-2 shadow-xl shadow-black/40">
+                            {SORT_OPTIONS.map((opt) => {
+                                const checked = sortKey === opt.key && sortDir === opt.dir;
+                                return (
+                                    <button
+                                        key={`${opt.key}-${opt.dir}`}
+                                        type="button"
+                                        onClick={() => {
+                                            handleSortWithDir(checked ? 'dex' : opt.key, checked ? 'asc' : opt.dir);
+                                            setShowSortMenu(false);
+                                        }}
+                                        className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11px] font-semibold transition-colors ${
+                                            checked ? 'bg-blue-500/15 text-blue-100' : 'text-slate-300 hover:bg-white/5'
+                                        }`}
+                                    >
+                                        <span className={`flex h-3.5 w-3.5 items-center justify-center rounded border ${
+                                            checked ? 'border-blue-400 bg-blue-500/40' : 'border-white/20'
+                                        }`}>
+                                            {checked && <Check size={10} />}
+                                        </span>
+                                        {opt.label}
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    )}
+                </div>
             </div>
 
             {showIvFilters && (
                 <div className="rounded-2xl border border-white/10 bg-slate-900/40 p-4 space-y-3">
+                    <div className="flex flex-wrap items-center gap-2">
+                        {IV_PRESET_FILTERS.map((item) => (
+                            <button
+                                key={item.id}
+                                type="button"
+                                onClick={() => setFilter((prev) => (prev === item.id ? 'all' : item.id))}
+                                className={`rounded-xl px-3 py-1.5 text-[10px] font-bold uppercase tracking-wide border ${
+                                    filter === item.id
+                                        ? 'border-blue-400/50 bg-blue-500/20 text-blue-100'
+                                        : 'border-white/10 bg-slate-900/50 text-slate-400 hover:text-slate-200'
+                                }`}
+                            >
+                                {item.label}
+                            </button>
+                        ))}
+                    </div>
                     <div className="flex items-center justify-between gap-3">
                         <p className="text-[11px] font-black uppercase tracking-widest text-slate-400">
                             Minimum IV thresholds
