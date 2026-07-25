@@ -26,6 +26,7 @@ const BagView = ({ client, initialUnsaved = false, onDirtyChange }) => {
     const [quickLoading, setQuickLoading] = useState(false);
     const [hasUnsavedBagChanges, setHasUnsavedBagChanges] = useState(Boolean(initialUnsaved));
     const [confidenceOpenKey, setConfidenceOpenKey] = useState(null);
+    const [exportingCsv, setExportingCsv] = useState(false);
 
     const dropdownRef = useRef(null);
 
@@ -143,6 +144,48 @@ const BagView = ({ client, initialUnsaved = false, onDirtyChange }) => {
             setItems(data);
         } catch (err) { console.error(err); }
         finally { setLoading(false); }
+    };
+
+    const POCKET_EXPORT_CONFIG = [
+        { key: "main", label: "Main Pocket" },
+        { key: "key", label: "Key Items" },
+        { key: "ball", label: "Ball Pocket" },
+        { key: "berry", label: "Berry Pouch" },
+        { key: "tm", label: "TM Case" },
+    ];
+
+    const exportItemsCsv = async () => {
+        setExportingCsv(true);
+        try {
+            const rows = [["Pocket", "Item", "Quantity"]];
+            for (const cfg of POCKET_EXPORT_CONFIG) {
+                const pocket = quickPockets?.[cfg.key] || null;
+                const ready = pocket ? (typeof pocket.ready === 'boolean' ? pocket.ready : !!pocket.anchor_offset) : false;
+                if (!pocket || pocket.locked || !ready || !pocket.anchor_offset) continue;
+
+                const pocketItems = await client.getBagPocket(pocket.anchor_offset);
+                for (const it of pocketItems) {
+                    if (!it.id || !it.qty) continue;
+                    rows.push([cfg.label, it.name, it.qty]);
+                }
+            }
+
+            const csv = rows
+                .map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(","))
+                .join("\n");
+            const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = "puse_items.csv";
+            a.click();
+            URL.revokeObjectURL(url);
+        } catch (err) {
+            console.error("Export items CSV error", err);
+            alert("Failed to export items CSV");
+        } finally {
+            setExportingCsv(false);
+        }
     };
 
     const openQuickPocket = (pocket) => {
@@ -360,13 +403,22 @@ const BagView = ({ client, initialUnsaved = false, onDirtyChange }) => {
                             <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">Quick Pockets</p>
                             <p className="text-xs text-slate-400 mt-1">Quick pockets are fastest on mature saves. On early saves (few items/TMs), auto-detection can miss pockets: use the search bar as the reliable fallback.</p>
                         </div>
-                        <button
-                            onClick={loadQuickPockets}
-                            disabled={quickLoading}
-                            className="px-3 py-2 text-[11px] font-bold rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-50"
-                        >
-                            {quickLoading ? "..." : "Refresh"}
-                        </button>
+                        <div className="flex gap-2">
+                            <button
+                                onClick={loadQuickPockets}
+                                disabled={quickLoading}
+                                className="px-3 py-2 text-[11px] font-bold rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-50"
+                            >
+                                {quickLoading ? "..." : "Refresh"}
+                            </button>
+                            <button
+                                onClick={exportItemsCsv}
+                                disabled={exportingCsv || quickLoading}
+                                className="px-3 py-2 text-[11px] font-bold rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-50"
+                            >
+                                {exportingCsv ? "Exporting..." : "Export CSV"}
+                            </button>
+                        </div>
                     </div>
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
